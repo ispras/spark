@@ -35,11 +35,11 @@ from sys import stderr
 
 from flavors import get_num_disks
 
-sys.path.append(os.path.join(os.path.dirname(__file__), 'third_party/boto-2.9.9'))
+#sys.path.append(os.path.join(os.path.dirname(__file__), 'third_party/boto-2.9.9'))
 
-import boto
-from boto.ec2.blockdevicemapping import BlockDeviceMapping, EBSBlockDeviceType
-from boto import ec2
+#import boto
+#from boto.ec2.blockdevicemapping import BlockDeviceMapping, EBSBlockDeviceType
+#from boto import ec2
 
 from novaclient.v1_1 import client
 
@@ -56,41 +56,41 @@ def parse_args():
                       help="Show this help message and exit")
     parser.add_option("-s", "--slaves", type="int", default=1,
                       help="Number of slaves to launch (default: 1)")
-    parser.add_option("-w", "--wait", type="int", default=120,
-                      help="Seconds to wait for nodes to start (default: 120)")
+    parser.add_option("-w", "--wait", type="int", default=60,
+                      help="Seconds to wait for nodes to start (default: 60)")
     parser.add_option("-k", "--key-pair",
                       help="Key pair to use on instances")
     parser.add_option("-i", "--identity-file",
                       help="SSH private key file to use for logging into instances")
-    parser.add_option("-t", "--instance-type", default="m1.large",
-                      help="Type of instance to launch (default: m1.large). " +
-                           "WARNING: must be 64-bit; small instances won't work")
+    parser.add_option("-t", "--instance-type", default="o1.large",
+                      help="Type of instance to launch (default: o1.large). " +
+                           "WARNING: must be 64-bit; small instances won't work" +
+                           "NOTE: Make sure that instance type exists in your Openstack")
     parser.add_option("-m", "--master-instance-type", default="",
                       help="Master instance type (leave empty for same as instance-type)")
-    parser.add_option("-r", "--region", default="",
-                      help="EC2 region zone to launch instances in")
-    parser.add_option("-z", "--zone", default="nova",
-                      help="Availability zone to launch instances in, or 'all' to spread " +
-                           "slaves across multiple (an additional $0.01/Gb for bandwidth" +
-                           "between zones applies)")
-    parser.add_option("-a", "--ami", default="latest",
-                      help="Amazon Machine Image ID to use, or 'latest' to use latest " +
-                           "available AMI (default: latest)")
+#    parser.add_option("-r", "--region", default="",
+#                      help="EC2 region zone to launch instances in")
+#    parser.add_option("-z", "--zone", default="nova",
+#                      help="Availability zone to launch instances in, or 'all' to spread " +
+#                           "slaves across multiple (an additional $0.01/Gb for bandwidth" +
+#                           "between zones applies)")
+    parser.add_option("-a", "--image-id",
+                      help="Openstack Image ID to use.")
     parser.add_option("-D", metavar="[ADDRESS:]PORT", dest="proxy_port",
                       help="Use SSH dynamic port forwarding to create a SOCKS proxy at " +
                            "the given local address (for use with login)")
     parser.add_option("--resume", action="store_true", default=False,
                       help="Resume installation on a previously launched cluster " +
                            "(for debugging)")
-    parser.add_option("--ebs-vol-size", metavar="SIZE", type="int", default=0,
-                      help="Attach a new EBS volume of size SIZE (in GB) to each node as " +
-                           "/vol. The volumes will be deleted when the instances terminate. " +
-                           "Only possible on EBS-backed AMIs.")
+#    parser.add_option("--ebs-vol-size", metavar="SIZE", type="int", default=0,
+#                      help="Attach a new EBS volume of size SIZE (in GB) to each node as " +
+#                           "/vol. The volumes will be deleted when the instances terminate. " +
+#                           "Only possible on EBS-backed AMIs.")
     parser.add_option("--swap", metavar="SWAP", type="int", default=1024,
                       help="Swap space to set up per node, in MB (default: 1024)")
-    parser.add_option("--spot-price", metavar="PRICE", type="float",
-                      help="If specified, launch slaves as spot instances with the given " +
-                           "maximum price (in dollars)")
+#    parser.add_option("--spot-price", metavar="PRICE", type="float",
+#                      help="If specified, launch slaves as spot instances with the given " +
+#                           "maximum price (in dollars)")
     parser.add_option("--cluster-type", type="choice", metavar="TYPE",
                       choices=["mesos", "standalone"], default="standalone",
                       help="'mesos' for a Mesos cluster, 'standalone' for a standalone " +
@@ -100,8 +100,8 @@ def parse_args():
                            "the Ganglia page will be publicly accessible")
     parser.add_option("--no-ganglia", action="store_false", dest="ganglia",
                       help="Disable Ganglia monitoring for the cluster")
-    parser.add_option("--old-scripts", action="store_true", default=False,
-                      help="Use old mesos-ec2 scripts, for Spark <= 0.6 AMIs")
+#    parser.add_option("--old-scripts", action="store_true", default=False,
+#                      help="Use old mesos-ec2 scripts, for Spark <= 0.6 AMIs")
     parser.add_option("-u", "--user", default="root",
                       help="The SSH user you want to connect as (default: root)")
     parser.add_option("--delete-groups", action="store_true", default=False,
@@ -124,18 +124,27 @@ def parse_args():
         print >> stderr, ("ERROR: The -i or --identity-file argument is " +
                           "required for " + action)
         sys.exit(1)
+    if opts.image_id == None and action in ['launch', 'login', 'start']:
+        print >> stderr, ("ERROR: The -a or --image-id argument is " +
+                          "required to " + action)
+        sys.exit(1)
+
     if opts.openstack_login == None:
         print >> stderr, ("ERROR: The -l or --openstack-login argument is " +
                           "required for any action")
+        sys.exit(1)
     if opts.openstack_password == None:
         print >> stderr, ("ERROR: The -p or --openstack-password argument is " +
                           "required for any action")
+        sys.exit(1)
     if opts.openstack_tenant_name == None:
         print >> stderr, ("ERROR: The -t or --openstack-tenant-name argument is " +
                           "required for any action")
+        sys.exit(1)
     if opts.openstack_address == None:
         print >> stderr, ("ERROR: The -d or --openstack-address argument is " +
                           "required for any action")
+        sys.exit(1)
     if opts.cluster_type not in ["mesos", "standalone"] and action == "launch":
         print >> stderr, ("ERROR: Invalid cluster type: " + opts.cluster_type)
         sys.exit(1)
@@ -156,15 +165,16 @@ def parse_args():
     return (opts, action, cluster_name)
 
 
-# Get the EC2 security group of the given name, creating it if it doesn't exist
+# Get the Openstack security group of the given name, creating it if it doesn't exist
 def get_or_make_group(conn, name):
-    groups = conn.get_all_security_groups()
+    groups = conn.security_groups.list()
     group = [g for g in groups if g.name == name]
     if len(group) > 0:
         return group[0]
     else:
         print "Creating security group " + name
-        return conn.create_security_group(name, "Spark EC2 group")
+        group = conn.security_groups.create(name, "Spark Openstack" + name + " group")
+        return group[0]
 
 
 # Wait for a set of launched instances to exit the "pending" state
@@ -179,12 +189,28 @@ def wait_for_instances(conn, instances):
             return
 
 
-# Check whether a given EC2 instance object is in a state we consider active,
-# i.e. not terminating or terminated. We count both stopping and stopped as
-# active since we can restart stopped clusters.
-def is_active(instance):
-    return (instance.state in ['pending', 'running', 'stopping', 'stopped'])
+# Check whether an Openstack instance is not terminated. Openstack has more states than Amazon, so this place
+# needs double-check (I could have missed something).
+# NOTE: I consider "rescue" state as not active.
 
+def is_active(instance):
+    return (instance.state in ['INITIAL', 'BUILD', 'ACTIVE', 'SHUTOFF', 'SUSPENDED', 'PAUSED', 'REBOOT'])
+
+
+# Authorize another group to have access to port range for the given group
+#
+def authorize_group(conn, dst_group_id, protocols, from_port=1, to_port=65535, cidr=None, src_group_id=None):
+    if cidr == None and src_group_id == None:
+        print >> stderr, ("ERROR: This should never happen, assertion " +
+                          "in function authorize_group %d" % dst_group_id)
+        sys.exit(1)
+    for protocol in protocols:
+        conn.security_group_rules.create(parent_group_id=dst_group_id,
+                                         ip_protocol=protocol,
+                                         from_port=from_port,
+                                         to_port=to_port,
+                                         cidr=cidr,
+                                         group_id=src_group_id)
 
 # Launch a cluster of the given name, by setting up its security groups,
 # and then starting new instances in them.
@@ -196,239 +222,136 @@ def launch_cluster(conn, opts, cluster_name):
     master_group = get_or_make_group(conn, cluster_name + "-master")
     slave_group = get_or_make_group(conn, cluster_name + "-slaves")
     zoo_group = get_or_make_group(conn, cluster_name + "-zoo")
-    if master_group.rules == []: # Group was just now created
-        master_group.authorize(src_group=master_group)
-        master_group.authorize(src_group=slave_group)
-        master_group.authorize(src_group=zoo_group)
-        master_group.authorize('tcp', 22, 22, '0.0.0.0/0')
-        master_group.authorize('tcp', 8080, 8081, '0.0.0.0/0')
-        master_group.authorize('tcp', 50030, 50030, '0.0.0.0/0')
-        master_group.authorize('tcp', 50070, 50070, '0.0.0.0/0')
-        master_group.authorize('tcp', 60070, 60070, '0.0.0.0/0')
+    # Group was just now created
+    if master_group.rules == []:
+        # authorize cluster groups to have full access to each other
+        authorize_group(conn, master_group.id, protocols=['tcp', 'udp', 'icmp'], src_group_id=master_group.id)
+        authorize_group(conn, master_group.id, protocols=['tcp', 'udp', 'icmp'], src_group_id=slave_group.id)
+        authorize_group(conn, master_group.id, protocols=['tcp', 'udp', 'icmp'], src_group_id=zoo_group.id)
+
+        # ssh
+        authorize_group(conn, master_group.id, protocols=['tcp'], from_port=22, to_port=22, cidr='0.0.0.0/0')
+
+        # web-servers
+        authorize_group(conn, master_group.id, protocols=['tcp'], from_port=8080, to_port=8081, cidr='0.0.0.0/0')
+
+        # ?
+        authorize_group(conn, master_group.id, protocols=['tcp'], from_port=50030, to_port=50030, cidr='0.0.0.0/0')
+
+        # ?
+        authorize_group(conn, master_group.id, protocols=['tcp'], from_port=50070, to_port=50070, cidr='0.0.0.0/0')
+
+        # hdfs dfs http address
+        authorize_group(conn, master_group.id, protocols=['tcp'], from_port=60070, to_port=60070, cidr='0.0.0.0/0')
+
         if opts.cluster_type == "mesos":
-            master_group.authorize('tcp', 38090, 38090, '0.0.0.0/0')
+            authorize_group(conn, master_group.id, protocols=['tcp'], from_port=38090, to_port=38090, cidr='0.0.0.0/0')
         if opts.ganglia:
-            master_group.authorize('tcp', 5080, 5080, '0.0.0.0/0')
+            authorize_group(conn, master_group.id, protocols=['tcp'], from_port=5080, to_port=5080, cidr='0.0.0.0/0')
+
     if slave_group.rules == []: # Group was just now created
-        slave_group.authorize(src_group=master_group)
-        slave_group.authorize(src_group=slave_group)
-        slave_group.authorize(src_group=zoo_group)
-        slave_group.authorize('tcp', 22, 22, '0.0.0.0/0')
-        slave_group.authorize('tcp', 8080, 8081, '0.0.0.0/0')
-        slave_group.authorize('tcp', 50060, 50060, '0.0.0.0/0')
-        slave_group.authorize('tcp', 50075, 50075, '0.0.0.0/0')
-        slave_group.authorize('tcp', 60060, 60060, '0.0.0.0/0')
-        slave_group.authorize('tcp', 60075, 60075, '0.0.0.0/0')
+        authorize_group(conn, slave_group.id, protocols=['tcp', 'udp', 'icmp'], src_group_id=master_group.id)
+        authorize_group(conn, slave_group.id, protocols=['tcp', 'udp', 'icmp'], src_group_id=slave_group.id)
+        authorize_group(conn, slave_group.id, protocols=['tcp', 'udp', 'icmp'], src_group_id=zoo_group.id)
+
+        authorize_group(conn, slave_group.id, protocols=['tcp'], from_port=22, to_port=22, cidr='0.0.0.0/0')
+        authorize_group(conn, slave_group.id, protocols=['tcp'], from_port=8080, to_port=8081, cidr='0.0.0.0/0')
+        authorize_group(conn, slave_group.id, protocols=['tcp'], from_port=50060, to_port=50060, cidr='0.0.0.0/0')
+        authorize_group(conn, slave_group.id, protocols=['tcp'], from_port=50075, to_port=50075, cidr='0.0.0.0/0')
+        authorize_group(conn, slave_group.id, protocols=['tcp'], from_port=60060, to_port=60060, cidr='0.0.0.0/0')
+        authorize_group(conn, slave_group.id, protocols=['tcp'], from_port=60075, to_port=60075, cidr='0.0.0.0/0')
+
     if zoo_group.rules == []: # Group was just now created
-        zoo_group.authorize(src_group=master_group)
-        zoo_group.authorize(src_group=slave_group)
-        zoo_group.authorize(src_group=zoo_group)
-        zoo_group.authorize('tcp', 22, 22, '0.0.0.0/0')
-        zoo_group.authorize('tcp', 2181, 2181, '0.0.0.0/0')
-        zoo_group.authorize('tcp', 2888, 2888, '0.0.0.0/0')
-        zoo_group.authorize('tcp', 3888, 3888, '0.0.0.0/0')
+        authorize_group(conn, zoo_group.id, protocols=['tcp', 'udp', 'icmp'], src_group_id=master_group.id)
+        authorize_group(conn, zoo_group.id, protocols=['tcp', 'udp', 'icmp'], src_group_id=slave_group.id)
+        authorize_group(conn, zoo_group.id, protocols=['tcp', 'udp', 'icmp'], src_group_id=zoo_group.id)
 
+        authorize_group(conn, zoo_group.id, protocols=['tcp'], from_port=22, to_port=22, cidr='0.0.0.0/0')
+        authorize_group(conn, zoo_group.id, protocols=['tcp'], from_port=2181, to_port=2181, cidr='0.0.0.0/0')
+        authorize_group(conn, zoo_group.id, protocols=['tcp'], from_port=2888, to_port=2888, cidr='0.0.0.0/0')
+        authorize_group(conn, zoo_group.id, protocols=['tcp'], from_port=3888, to_port=3888, cidr='0.0.0.0/0')
+
+#TODO: make this check too. It's not so critical at this moment.
     # Check if instances are already running in our groups
-    active_nodes = get_existing_cluster(conn, opts, cluster_name,
-                                        die_on_error=False)
-    if any(active_nodes):
-        print >> stderr, ("ERROR: There are already instances running in " +
-                          "group %s, %s or %s" % (master_group.name, slave_group.name, zoo_group.name))
-        sys.exit(1)
-
-    # Figure out the latest AMI from our static URL
-    if opts.ami == "latest":
-        try:
-            opts.ami = urllib2.urlopen(LATEST_AMI_URL).read().strip()
-            print "Latest Spark AMI: " + opts.ami
-        except:
-            print >> stderr, "Could not read " + LATEST_AMI_URL
-            sys.exit(1)
+#    active_nodes = get_existing_cluster(conn, opts, cluster_name,
+#                                        die_on_error=False)
+#    if any(active_nodes):
+#        print >> stderr, ("ERROR: There are already instances running in " +
+#                          "group %s, %s or %s" % (master_group.name, slave_group.name, zoo_group.name))
+#        sys.exit(1)
 
     print "Launching instances..."
 
     try:
-        image = conn.get_all_images(image_ids=[opts.ami])[0]
+        # try to find image with specified ID
+        image = conn.images.get(opts.image_id)
     except:
-        print >> stderr, "Could not find AMI " + opts.ami
+        print >> stderr, "Could not find specified image: " + opts.ami
         sys.exit(1)
 
-    # Create block device mapping so that we can add an EBS volume if asked to
-    block_map = BlockDeviceMapping()
-    if opts.ebs_vol_size > 0:
-        device = EBSBlockDeviceType()
-        device.size = opts.ebs_vol_size
-        device.delete_on_termination = True
-        block_map["/dev/sdv"] = device
+    # Launch slaves first
+    slave_nodes = []
+    slave_nodes_nova = []
+    slave_nodes_reservations = []
+    for slave_id in (0, opts.slaves):
+        instance_name = "spark-" + cluster_name + "-slave-" + str(slave_id)
+        print (opts.instance_type)
+        for flav in conn.flavors.list():
+            if flav.name == opts.instance_type:
+                print ("Instance type detected: " + opts.instance_type)
+                flavor = flav
+            else:
+                print >> stderr, "Could not find specified instance type for slave: " + opts.instance_type
+                sys.exit(1)
 
-    # !TODO! !NOTE! !ATTENTION! very strictly hardcoded; seems that we should port the whole code from boto to novaclient
+#TODO: need to implement floating IPs here.
+#TODO: implement quotas check here.
+        slave_res = conn.servers.create(name=instance_name,
+                                        image=image,
+                                        security_groups={slave_group.name},
+                                        key_name=opts.key_pair,
+                                        flavor=flavor,
+                                        min_count=1,
+                                        max_count=1)
 
-    nova_client = client.Client(opts.openstack_login, opts.openstack_password, opts.openstack_tenant_name, opts.openstack_address, service_type="compute")
-    nova_client.authenticate()
+#TODO: need to debug here when Openstack will be available, it's 100% invalid code now
+        slave_nodes_reservations += conn.get_all_instances(filters={"group-name":group_name})
+        for slv in slave_nodes_reservations:
+            if slv.instances[0].__dict__['private_dns_name'] == instance_name:
+                slave_nodes += slv.instances
 
-    # Launch slaves
-    if opts.spot_price != None:
-        # Launch spot instances with the requested price
-        print ("Requesting %d slaves as spot instances with price $%.3f" %
-               (opts.slaves, opts.spot_price))
-        zones = get_zones(conn, opts)
-        num_zones = len(zones)
-        i = 0
-        my_req_ids = []
-        for zone in zones:
-            num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
-            slave_reqs = conn.request_spot_instances(
-                price=opts.spot_price,
-                image_id=opts.ami,
-                launch_group="launch-group-%s" % cluster_name,
-                placement=zone,
-                count=num_slaves_this_zone,
-                key_name=opts.key_pair,
-                security_groups=[slave_group],
-                instance_type=opts.instance_type,
-                block_device_map=block_map)
-            my_req_ids += [req.id for req in slave_reqs]
-            i += 1
+    print "Launched %d slaves" % opts.slaves
 
-        print "Waiting for spot instances to be granted..."
-        try:
-            while True:
-                time.sleep(10)
-                reqs = conn.get_all_spot_instance_requests()
-                id_to_req = {}
-                for r in reqs:
-                    id_to_req[r.id] = r
-                active_instance_ids = []
-                for i in my_req_ids:
-                    if i in id_to_req and id_to_req[i].state == "active":
-                        active_instance_ids.append(id_to_req[i].instance_id)
-                if len(active_instance_ids) == opts.slaves:
-                    print "All %d slaves granted" % opts.slaves
-                    reservations = conn.get_all_instances(active_instance_ids)
-                    slave_nodes = []
-                    for r in reservations:
-                        slave_nodes += r.instances
-                    break
-                else:
-                    print "%d of %d slaves granted, waiting longer" % (
-                        len(active_instance_ids), opts.slaves)
-        except:
-            print "Canceling spot instance requests"
-            conn.cancel_spot_instance_requests(my_req_ids)
-            # Log a warning if any of these requests actually launched instances:
-            (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(
-                conn, opts, cluster_name, die_on_error=False)
-            running = len(master_nodes) + len(slave_nodes) + len(zoo_nodes)
-            if running:
-                print >> stderr, ("WARNING: %d instances are still running" % running)
-            sys.exit(0)
-    else:
-        # Launch non-spot instances
-        zones = get_zones(conn, opts)
-        num_zones = len(zones)
-        i = 0
-        slave_nodes = []
-        slave_nodes_nova = []
-        slave_nodes_reservations = []
-        for zone in zones:
-            num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
-            if num_slaves_this_zone > 0:
-                k = 0
-                while num_slaves_this_zone > k:
-                    instance_name = "spark-" + cluster_name + "-zone-" + str(i) + "-slave-" + str(k)
-                    for group in nova_client.security_groups.list():
-                        if group.__dict__["name"] == slave_group.name:
-                            print ("Got security group: " + slave_group.name)
-                            group_id = group.id
-                            group_name = group.name
-                    for img in nova_client.images.list():
-                        if img.__dict__["name"] == image.__dict__["name"]:
-                            print ("Got the image: " + img.__dict__["name"])
-                            image_id = img.id
-                    print (opts.instance_type)
-                    for flav in nova_client.flavors.list():
-                        if flav.name == opts.instance_type:
-                            print ("Instance type detected: " + opts.instance_type)
-                            flavor = flav
-                    slave_res = nova_client.servers.create(name=instance_name,
-                                                           image=nova_client.images.get(image=image_id),
-                                                           security_groups={group_name},
-                                                           key_name=opts.key_pair,
-                                                           flavor=flavor,
-                                                           placement=zone,
-                                                           min_count=1,
-                                                           max_count=1,
-                                                           block_device_mapping=block_map)
-                    slave_nodes_reservations += conn.get_all_instances(filters={"group-name":group_name})
-                    for slv in slave_nodes_reservations:
-                        if slv.instances[0].__dict__['private_dns_name'] == instance_name:
-                            slave_nodes += slv.instances
-                    k += 1
-                print "Launched %d slaves in %s, regid = %s" % (num_slaves_this_zone,
-                                                                zone, slave_res.id)
-            i += 1
+    # Launch master
 
-    # Launch masters
     master_type = opts.master_instance_type
     if master_type == "":
         master_type = opts.instance_type
-    if opts.zone == 'all':
-        opts.zone = random.choice(conn.get_all_zones()).name
-#    master_res = image.run(key_name=opts.key_pair,
-#                           security_groups=[master_group],
-#                           instance_type=master_type,
-#                           placement=opts.zone,
-#                           min_count=1,
-#                           max_count=1,
-#                           block_device_map=block_map)
-#    master_nodes = master_res.instances
     master_nodes = []
     master_nodes_reservations = []
-    instance_name = "spark-" + cluster_name + "-zone-" + str(i) + "-master"
-    group_name = ""
-    for group in nova_client.security_groups.list():
-        if group.__dict__["name"] == master_group.name:
-            print ("Got security group: " + master_group.name)
-            group_id = group.id
-            group_name = group.name
-    for img in nova_client.images.list():
-        if img.__dict__["name"] == image.__dict__["name"]:
-            print ("Got the image: " + img.__dict__["name"])
-            image_id = img.id
-    print (opts.instance_type)
-    for flav in nova_client.flavors.list():
+    instance_name = "spark-" + cluster_name + "-master"
+    for flav in conn.flavors.list():
         if flav.name == master_type:
             print ("Instance type detected: " + opts.instance_type)
             flavor = flav
-    master_res = nova_client.servers.create(name=instance_name,
-                                           image=nova_client.images.get(image=image_id),
-                                           security_groups={group_name},
-                                           key_name=opts.key_pair,
-                                           flavor=flavor,
-                                           placement=zone,
-                                           min_count=1,
-                                           max_count=1,
-                                           block_device_mapping=block_map)
+        else:
+            print >> stderr, "Could not find specified instance type for master: " + master_type
+            sys.exit(1)
+    master_res = conn.servers.create(name=instance_name,
+                                     image=image,
+                                     security_groups={master_group.name},
+                                     key_name=opts.key_pair,
+                                     flavor=flavor,
+                                     min_count=1,
+                                     max_count=1)
+#TODO: the same: need to debug here when Openstack will be available, it's 100% invalid code now
     master_nodes_reservations += conn.get_all_instances(filters={"group-name":group_name})
     for mstr in master_nodes_reservations:
         if mstr.instances[0].__dict__['private_dns_name'] == instance_name:
             master_nodes += mstr.instances
     n = 0
-#    for instance in master_nodes:
-#        instance_name = "spark-" + cluster_name + "-zone-" + str(i) + "-master-" + str(n)
-#        for server in nova_client.servers.list():
-#            print (server.__dict__)
-#        print(instance_name)
-#        print(instance.id)
-#        print(instance.__dict__)
-#        for server in nova_client.servers.list():
-#            if server.id in instance.private_dns_name:
-#                nova_client.servers.update(server.id, instance_name)
-# NOTE! this methods don't work; they will be supported only since openstack horizon (november 2013)
-#        conn.create_tags([instance.id], {"Name": "spark-" + opts.key_pair + "-zone-" + str(i) + "-slave-" + str(n)})
-#        instance.add_tag('Name', instance_name)
-#        n += 1
-    print "Launched master in %s, regid = %s" % (zone, master_res.id)
+
+    print "Launched master"
 
     zoo_nodes = []
 
@@ -440,12 +363,16 @@ def launch_cluster(conn, opts, cluster_name):
 # Returns a tuple of lists of EC2 instance objects for the masters,
 # slaves and zookeeper nodes (in that order).
 def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
+#comment for future: to get address, we should use the following:
+#   for instance in nova_client.servers.list():
+#..     print instance.addresses["private"][0]["addr"]
     print "Searching for existing cluster " + cluster_name + "..."
-    reservations = conn.get_all_instances()
+    reservations = conn.servers.list()
     master_nodes = []
     slave_nodes = []
     zoo_nodes = []
     for res in reservations:
+# BOOKMARK: stopped here.
         active = [i for i in res.instances if is_active(i)]
         if len(active) > 0:
             group_names = [g.name for g in res.groups]
@@ -659,26 +586,20 @@ def get_partition(total, num_partitions, current_partitions):
 def main():
     (opts, action, cluster_name) = parse_args()
     try:
-#        conn = ec2.connect_to_region(
-#            'nova',
-#            cfn_region_endpoint='172.16.52.10',
-#            cloudwatch_region_name='heat',
-#            cloudwatch_region_endpoint='172.16.52.10',
-#            port=8000,
-#            path="/v1/",
-#            debug='1')
-        conn = boto.connect_euca(host='10.10.10.121',
-#                                 aws_access_key_id="",
-#                                 aws_secret_access_key="",
-                                 path="/services/Cloud/", is_secure=False, debug=0)
-        print(conn)
+        conn = client.Client(opts.openstack_login,
+                                    opts.openstack_password,
+                                    opts.openstack_tenant_name,
+                                    opts.openstack_address,
+                                    service_type="compute")
+        conn.authenticate()
+#comment for future: to get address, we should use the following:
+#   for instance in nova_client.servers.list():
+#..     print instance.addresses["private"][0]["addr"]
+
+        print(conn.__dict__)
     except Exception as e:
         print >> stderr, (e)
         sys.exit(1)
-
-    # Select an AZ at random if it was not specified.
-    if opts.zone == "":
-        opts.zone = random.choice(conn.get_all_zones()).name
 
     if action == "launch":
         if opts.resume:

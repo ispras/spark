@@ -11,3 +11,4 @@ IMPORTANT NOTES:
 5) You need to correct file "flavors.py" to correspond your Openstack instance types. We need it because
    in typical Openstack installation we have only one Ephemeral disk device.
 6) A little later we will get rid of boto dependency and everything will be cool.
+7) It's possible to launch instances in one zone only

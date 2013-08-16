@@ -194,7 +194,7 @@ def wait_for_instances(conn, instances):
 # NOTE: I consider "rescue" state as not active.
 
 def is_active(instance):
-    return (instance.state in ['INITIAL', 'BUILD', 'ACTIVE', 'SHUTOFF', 'SUSPENDED', 'PAUSED', 'REBOOT'])
+    return (instance.status in ['INITIAL', 'BUILD', 'ACTIVE', 'SHUTOFF', 'SUSPENDED', 'PAUSED', 'REBOOT'])
 
 
 # Authorize another group to have access to port range for the given group
@@ -271,14 +271,13 @@ def launch_cluster(conn, opts, cluster_name):
         authorize_group(conn, zoo_group.id, protocols=['tcp'], from_port=2888, to_port=2888, cidr='0.0.0.0/0')
         authorize_group(conn, zoo_group.id, protocols=['tcp'], from_port=3888, to_port=3888, cidr='0.0.0.0/0')
 
-#TODO: make this check too. It's not so critical at this moment.
     # Check if instances are already running in our groups
-#    active_nodes = get_existing_cluster(conn, opts, cluster_name,
-#                                        die_on_error=False)
-#    if any(active_nodes):
-#        print >> stderr, ("ERROR: There are already instances running in " +
-#                          "group %s, %s or %s" % (master_group.name, slave_group.name, zoo_group.name))
-#        sys.exit(1)
+    active_nodes = get_existing_cluster(conn, opts, cluster_name,
+                                        die_on_error=False)
+    if any(active_nodes):
+        print >> stderr, ("ERROR: There are already instances running in " +
+                          "group %s, %s or %s" % (master_group.name, slave_group.name, zoo_group.name))
+        sys.exit(1)
 
     print "Launching instances..."
 
@@ -363,25 +362,21 @@ def launch_cluster(conn, opts, cluster_name):
 # Returns a tuple of lists of EC2 instance objects for the masters,
 # slaves and zookeeper nodes (in that order).
 def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
-#comment for future: to get address, we should use the following:
-#   for instance in nova_client.servers.list():
-#..     print instance.addresses["private"][0]["addr"]
     print "Searching for existing cluster " + cluster_name + "..."
     reservations = conn.servers.list()
     master_nodes = []
     slave_nodes = []
     zoo_nodes = []
     for res in reservations:
-# BOOKMARK: stopped here.
-        active = [i for i in res.instances if is_active(i)]
-        if len(active) > 0:
-            group_names = [g.name for g in res.groups]
-            if group_names == [cluster_name + "-master"]:
-                master_nodes += res.instances
-            elif group_names == [cluster_name + "-slaves"]:
-                slave_nodes += res.instances
-            elif group_names == [cluster_name + "-zoo"]:
-                zoo_nodes += res.instances
+        active = is_active(res)
+        if active:
+            group_names = [g["name"] for g in res.security_groups]
+            if cluster_name + "-master" in group_names:
+                master_nodes += res
+            elif cluster_name + "-slaves" in group_names:
+                slave_nodes += res
+            elif cluster_name + "-zoo" in group_names:
+                zoo_nodes += res
     if any((master_nodes, slave_nodes, zoo_nodes)):
         print ("Found %d master(s), %d slaves, %d ZooKeeper nodes" %
                (len(master_nodes), len(slave_nodes), len(zoo_nodes)))

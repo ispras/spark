@@ -49,7 +49,7 @@ LATEST_AMI_URL = "https://s3.amazonaws.com/mesos-images/ids/latest-spark-0.7"
 
 # Configure and parse our command-line arguments
 def parse_args():
-    parser = OptionParser(usage="spark-ec2 [options] <action> <cluster_name>"
+    parser = OptionParser(usage="spark-openstack [options] <action> <cluster_name>"
                                 + "\n\n<action> can be: launch, destroy, login, stop, start, get-master",
                           add_help_option=False)
     parser.add_option("-h", "--help", action="help",
@@ -114,6 +114,9 @@ def parse_args():
                       help="Your tenant name in Openstack")
     parser.add_option("-d", "--openstack-address",
                       help="Openstack address with port")
+    parser.add_option("-n", "--openstack-network-communication-method", type="choice", metavar="NET",
+                      choices=["fixed", "floating", "public-dns-name"], default="fixed",
+                      help="Openstack address with port")
 
     (opts, args) = parser.parse_args()
     if len(args) != 2:
@@ -149,19 +152,6 @@ def parse_args():
         print >> stderr, ("ERROR: Invalid cluster type: " + opts.cluster_type)
         sys.exit(1)
 
-    # Boto config check
-    # http://boto.cloudhackers.com/en/latest/boto_config_tut.html
-    home_dir = os.getenv('HOME')
-    if home_dir == None or not os.path.isfile(home_dir + '/.boto'):
-        if not os.path.isfile('/etc/boto.cfg'):
-            if os.getenv('AWS_ACCESS_KEY_ID') == None:
-                print >> stderr, ("ERROR: The environment variable AWS_ACCESS_KEY_ID " +
-                                  "must be set")
-                sys.exit(1)
-            if os.getenv('AWS_SECRET_ACCESS_KEY') == None:
-                print >> stderr, ("ERROR: The environment variable AWS_SECRET_ACCESS_KEY " +
-                                  "must be set")
-                sys.exit(1)
     return (opts, action, cluster_name)
 
 
@@ -194,7 +184,7 @@ def wait_for_instances(conn, instances):
 # NOTE: I consider "rescue" state as not active.
 
 def is_active(instance):
-    return (instance.status in ['INITIAL', 'BUILD', 'ACTIVE', 'SHUTOFF', 'SUSPENDED', 'PAUSED', 'REBOOT'])
+    return (instance.status in ['INITIAL', 'BUILD', 'ACTIVE', 'SHUTOFF', 'STOP' 'SUSPENDED', 'PAUSED', 'REBOOT'])
 
 
 # Authorize another group to have access to port range for the given group
@@ -290,10 +280,8 @@ def launch_cluster(conn, opts, cluster_name):
 
     # Launch slaves first
     slave_nodes = []
-    slave_nodes_nova = []
-    slave_nodes_reservations = []
     for slave_id in (0, opts.slaves):
-        instance_name = "spark-" + cluster_name + "-slave-" + str(slave_id)
+        instance_name = cluster_name + "-slave-" + str(slave_id)
         print (opts.instance_type)
         for flav in conn.flavors.list():
             if flav.name == opts.instance_type:
@@ -305,20 +293,13 @@ def launch_cluster(conn, opts, cluster_name):
 
 #TODO: need to implement floating IPs here.
 #TODO: implement quotas check here.
-        slave_res = conn.servers.create(name=instance_name,
+        slave_nodes += conn.servers.create(name=instance_name,
                                         image=image,
                                         security_groups={slave_group.name},
                                         key_name=opts.key_pair,
                                         flavor=flavor,
                                         min_count=1,
                                         max_count=1)
-
-#TODO: need to debug here when Openstack will be available, it's 100% invalid code now
-        slave_nodes_reservations += conn.get_all_instances(filters={"group-name":group_name})
-        for slv in slave_nodes_reservations:
-            if slv.instances[0].__dict__['private_dns_name'] == instance_name:
-                slave_nodes += slv.instances
-
     print "Launched %d slaves" % opts.slaves
 
     # Launch master
@@ -327,8 +308,7 @@ def launch_cluster(conn, opts, cluster_name):
     if master_type == "":
         master_type = opts.instance_type
     master_nodes = []
-    master_nodes_reservations = []
-    instance_name = "spark-" + cluster_name + "-master"
+    instance_name = cluster_name + "-master"
     for flav in conn.flavors.list():
         if flav.name == master_type:
             print ("Instance type detected: " + opts.instance_type)
@@ -336,19 +316,13 @@ def launch_cluster(conn, opts, cluster_name):
         else:
             print >> stderr, "Could not find specified instance type for master: " + master_type
             sys.exit(1)
-    master_res = conn.servers.create(name=instance_name,
+    master_nodes += conn.servers.create(name=instance_name,
                                      image=image,
                                      security_groups={master_group.name},
                                      key_name=opts.key_pair,
                                      flavor=flavor,
                                      min_count=1,
                                      max_count=1)
-#TODO: the same: need to debug here when Openstack will be available, it's 100% invalid code now
-    master_nodes_reservations += conn.get_all_instances(filters={"group-name":group_name})
-    for mstr in master_nodes_reservations:
-        if mstr.instances[0].__dict__['private_dns_name'] == instance_name:
-            master_nodes += mstr.instances
-    n = 0
 
     print "Launched master"
 
@@ -392,10 +366,49 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
         sys.exit(1)
 
 
+# This function gives an address to communicate with nodes. There are 3 general ways of addressing in Openstack:
+# 1) Fixed local IPs. Lots of installation use only this type due to lack of network resources. It this case
+#    networking usually uses static routes inside openstack virtual network. It's not secure but effective if you
+#    don't have networking skills
+# 2) Floating IPs. The most common case. Floating IPs may be used to be bridged to outer networks, so instances have
+#    two addresses binded to one network interface so outer users may use e.g. addresses 192.168.0.* to access VMs
+#    and VMs at the same time think that they have addresses 10.10.10.*
+# 3) Public DNS names. The most difficult way and it's the same as Amazon does. Each virtual machine has a unique
+#    domain name which can be used for communications. It's not too easy to maintain, but enterprise companies prefer
+#    this way (I don't know why)
+#
+# Thus, this function resolves the way to communicate with instances based on input options.
+def get_address_by_instance_object(node, opts):
+    comm_method = opts.openstack_network_communication_method
+    if comm_method == "fixed":
+        for address in node.addresses["private"]:
+            if address["OS-EXT-IPS:type"] == "fixed":
+                return address["addr"]
+        # if we get here, then instance doesn't have an address => error
+        print >> stderr, "Instance didn't get fixed address, that's an error."
+        sys.exit(1)
+    elif comm_method == "floating":
+        for address in node.addresses["private"]:
+            if address["OS-EXT-IPS:type"] == "floating":
+                return address["addr"]
+        # if we get here, then instance doesn't have an address => error
+        print >> stderr, "Instance didn't get floating address, that's an error."
+        sys.exit(1)
+    elif comm_method == "public-dns-address":
+        if node.accessIPv4 == '':
+            print >> stderr, "Instance didn't get public dns name, that's an error."
+            sys.exit(1)
+        else:
+            return node.accessIPv4
+    else:
+        print >> stderr, "Something is totally wrong at get_address_by_instance_object, assert" + node.__dict__
+        sys.exit(1)
+
+
 # Deploy configuration files and run setup scripts on a newly launched
 # or started EC2 cluster.
 def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_key):
-    master = master_nodes[0].public_dns_name
+    master = get_address_by_instance_object(node=master_nodes[0], opts=opts)
     if deploy_ssh_key:
         print "Copying SSH key %s to master..." % opts.identity_file
         ssh(master, opts, 'mkdir -p ~/.ssh')
@@ -473,7 +486,9 @@ def wait_for_cluster(conn, wait_secs, master_nodes, slave_nodes, zoo_nodes):
 # script to be run on that instance to copy them to other nodes.
 def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
                  modules):
-    active_master = master_nodes[0].public_dns_name
+# TODO: 1) implement floating IPs support and make it default
+#       2) check if configurations with "public" addresses exist (or maybe return public_dns_name)
+    active_master = get_address_by_instance_object(node=master_nodes[0], opts=opts)
 
     num_disks = get_num_disks(opts.instance_type)
     hdfs_data_dirs = "/mnt/ephemeral-hdfs/data"
@@ -485,10 +500,15 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
             mapred_local_dirs += ",/mnt%d/hadoop/mrlocal" % i
             spark_local_dirs += ",/mnt%d/spark" % i
 
+# TODO: find out if we need zoo_nodes at all. Now here's a hack
+    zoo_nodes = []
     if zoo_nodes != []:
-        zoo_list = '\n'.join([i.public_dns_name for i in zoo_nodes])
-        cluster_url = "zoo://" + ",".join(
-            ["%s:2181/mesos" % i.public_dns_name for i in zoo_nodes])
+        zoo_list = "NONE"
+        print >> stderr, "Something is totally wrong, assert. Zoo-nodes should be empty (now)"
+        sys.exit(1)
+#        zoo_list = '\n'.join([i.public_dns_name for i in zoo_nodes])
+#        cluster_url = "zoo://" + ",".join(
+#            ["%s:2181/mesos" % i.public_dns_name for i in zoo_nodes])
     elif opts.cluster_type == "mesos":
         zoo_list = "NONE"
         cluster_url = "%s:5050" % active_master
@@ -497,9 +517,9 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
         cluster_url = "%s:7077" % active_master
 
     template_vars = {
-        "master_list": '\n'.join([i.public_dns_name for i in master_nodes]),
+        "master_list": '\n'.join([get_address_by_instance_object(i, opts) for i in master_nodes]),
         "active_master": active_master,
-        "slave_list": '\n'.join([i.public_dns_name for i in slave_nodes]),
+        "slave_list": '\n'.join([get_address_by_instance_object(i, opts) for i in slave_nodes]),
         "zoo_list": zoo_list,
         "cluster_url": cluster_url,
         "hdfs_data_dirs": hdfs_data_dirs,
@@ -558,24 +578,7 @@ def ssh(host, opts, command):
                 raise e
             print "Error connecting to host {0}, sleeping 30".format(e)
             time.sleep(30)
-            tries = tries + 1
-
-
-# Gets a list of zones to launch instances in
-def get_zones(conn, opts):
-    if opts.zone == 'all':
-        zones = [z.name for z in conn.get_all_zones()]
-    else:
-        zones = [opts.zone]
-    return zones
-
-
-# Gets the number of items in a partition
-def get_partition(total, num_partitions, current_partitions):
-    num_slaves_this_zone = total / num_partitions
-    if (total % num_partitions) - current_partitions > 0:
-        num_slaves_this_zone += 1
-    return num_slaves_this_zone
+            tries += 1
 
 
 def main():
@@ -587,9 +590,6 @@ def main():
                                     opts.openstack_address,
                                     service_type="compute")
         conn.authenticate()
-#comment for future: to get address, we should use the following:
-#   for instance in nova_client.servers.list():
-#..     print instance.addresses["private"][0]["addr"]
 
         print(conn.__dict__)
     except Exception as e:
@@ -632,33 +632,35 @@ def main():
                 attempt = 1;
                 while attempt <= 3:
                     print "Attempt %d" % attempt
-                    groups = [g for g in conn.get_all_security_groups() if g.name in group_names]
+                    groups = [g for g in conn.security_groups.list() if g.name in group_names]
                     success = True
                     # Delete individual rules in all groups before deleting groups to
                     # remove dependencies between them
                     for group in groups:
                         print "Deleting rules in security group " + group.name
                         for rule in group.rules:
-                            for grant in rule.grants:
-                                success &= group.revoke(ip_protocol=rule.ip_protocol,
-                                                        from_port=rule.from_port,
-                                                        to_port=rule.to_port,
-                                                        src_group=grant)
+                            try:
+                                conn.security_group_rules.delete(rule=rule["id"])
+                            except Exception as e:
+                                print >> stderr, (e)
+                                sys.exit(1)
 
                     # Sleep for AWS eventual-consistency to catch up, and for instances
                     # to terminate
                     time.sleep(30)  # Yes, it does have to be this long :-(
                     for group in groups:
                         try:
-                            conn.delete_security_group(group.name)
+                            conn.security_groups.delete(group=group.name)
                             print "Deleted security group " + group.name
-                        except boto.exception.EC2ResponseError:
-                            success = False;
+                        except Exception as e:
+                            print >> stderr, (e)
                             print "Failed to delete security group " + group.name
+                            sys.exit(1)
 
                     # Unfortunately, group.revoke() returns True even if a rule was not
                     # deleted, so this needs to be rerun if something fails
-                    if success: break;
+                    if success:
+                        break
 
                     attempt += 1
 
@@ -679,7 +681,7 @@ def main():
 
     elif action == "get-master":
         (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(conn, opts, cluster_name)
-        print master_nodes[0].public_dns_name
+        print get_address_by_instance_object(node=master_nodes[0], opts=opts)
 
     elif action == "stop":
         response = raw_input("Are you sure you want to stop the cluster " +
@@ -692,16 +694,16 @@ def main():
                 conn, opts, cluster_name, die_on_error=False)
             print "Stopping master..."
             for inst in master_nodes:
-                if inst.state not in ["shutting-down", "terminated"]:
+                if inst.status not in ["STOP", "DELETED"]:
                     inst.stop()
             print "Stopping slaves..."
             for inst in slave_nodes:
-                if inst.state not in ["shutting-down", "terminated"]:
+                if inst.status not in ["STOP", "DELETED"]:
                     inst.stop()
             if zoo_nodes != []:
                 print "Stopping zoo..."
                 for inst in zoo_nodes:
-                    if inst.state not in ["shutting-down", "terminated"]:
+                    if inst.status not in ["STOP", "DELETED"]:
                         inst.stop()
 
     elif action == "start":
@@ -709,16 +711,16 @@ def main():
             conn, opts, cluster_name)
         print "Starting slaves..."
         for inst in slave_nodes:
-            if inst.state not in ["shutting-down", "terminated"]:
+            if inst.state not in ["DELETED"]:
                 inst.start()
         print "Starting master..."
         for inst in master_nodes:
-            if inst.state not in ["shutting-down", "terminated"]:
+            if inst.state not in ["DELETED"]:
                 inst.start()
         if zoo_nodes != []:
             print "Starting zoo..."
             for inst in zoo_nodes:
-                if inst.state not in ["shutting-down", "terminated"]:
+                if inst.status not in ["DELETED"]:
                     inst.start()
         wait_for_cluster(conn, opts.wait, master_nodes, slave_nodes, zoo_nodes)
         setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, False)

@@ -116,7 +116,8 @@ def parse_args():
                       help="Openstack auth url with port (e.g. http://10.10.10.121:5000/v2.0) ")
     parser.add_option("-n", "--openstack-network-communication-method", type="choice", metavar="NET",
                       choices=["fixed", "floating", "public-dns-name"], default="fixed",
-                      help="Openstack address with port")
+                      help="""Openstack communication way with instances. Choose between 'fixed', 'floating' and
+                      'public-dns-name'. If you don't understand what does it mean, look at README in this folder""")
 
     (opts, args) = parser.parse_args()
     if len(args) != 2:

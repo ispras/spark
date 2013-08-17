@@ -110,10 +110,10 @@ def parse_args():
                       help="Your login name in Openstack")
     parser.add_option("-p", "--openstack-password",
                       help="Your password for Openstack")
-    parser.add_option("-t", "--openstack-tenant-name",
+    parser.add_option("-T", "--openstack-tenant-name",
                       help="Your tenant name in Openstack")
     parser.add_option("-d", "--openstack-address",
-                      help="Openstack address with port")
+                      help="Openstack auth url with port (e.g. http://10.10.10.121:5000/v2.0) ")
     parser.add_option("-n", "--openstack-network-communication-method", type="choice", metavar="NET",
                       choices=["fixed", "floating", "public-dns-name"], default="fixed",
                       help="Openstack address with port")

@@ -22,6 +22,9 @@ import java.lang.System.getenv
 
 import akka.actor.ActorRef
 
+import com.google.common.base.Charsets
+import com.google.common.io.Files
+
 import spark.{Utils, Logging}
 import spark.deploy.{ExecutorState, ApplicationDescription}
 import spark.deploy.DeployMessages.ExecutorStateChanged
@@ -111,6 +114,7 @@ private[spark] class ExecutorRunner(
     val libraryOpts = getAppEnv("SPARK_LIBRARY_PATH")
       .map(p => List("-Djava.library.path=" + p))
       .getOrElse(Nil)
+    val workerLocalOpts = Option(getenv("SPARK_JAVA_OPTS")).map(Utils.splitCommandString).getOrElse(Nil)
     val userOpts = getAppEnv("SPARK_JAVA_OPTS").map(Utils.splitCommandString).getOrElse(Nil)
     val memoryOpts = Seq("-Xms" + memory + "M", "-Xmx" + memory + "M")
 
@@ -120,12 +124,12 @@ private[spark] class ExecutorRunner(
         Seq(sparkHome + "/bin/compute-classpath" + ext),
         extraEnvironment=appDesc.command.environment)
 
-    Seq("-cp", classPath) ++ libraryOpts ++ userOpts ++ memoryOpts
+    Seq("-cp", classPath) ++ libraryOpts ++ workerLocalOpts ++ userOpts ++ memoryOpts
   }
 
   /** Spawn a thread that will redirect a given stream to a file */
   def redirectStream(in: InputStream, file: File) {
-    val out = new FileOutputStream(file)
+    val out = new FileOutputStream(file, true)
     new Thread("redirect output to " + file) {
       override def run() {
         try {
@@ -161,9 +165,16 @@ private[spark] class ExecutorRunner(
       env.put("SPARK_LAUNCH_WITH_SCALA", "0")
       process = builder.start()
 
+      val header = "Spark Executor Command: %s\n%s\n\n".format(
+        command.mkString("\"", "\" \"", "\""), "=" * 40)
+
       // Redirect its stdout and stderr to files
-      redirectStream(process.getInputStream, new File(executorDir, "stdout"))
-      redirectStream(process.getErrorStream, new File(executorDir, "stderr"))
+      val stdout = new File(executorDir, "stdout")
+      redirectStream(process.getInputStream, stdout)
+
+      val stderr = new File(executorDir, "stderr")
+      Files.write(header, stderr, Charsets.UTF_8)
+      redirectStream(process.getErrorStream, stderr)
 
       // Wait for it to exit; this is actually a bad thing if it happens, because we expect to run
       // long-lived processes only. However, in the future, we might restart the executor a few

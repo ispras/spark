@@ -51,15 +51,13 @@ private[spark] object ResultTask {
   }
 
   def deserializeInfo(stageId: Int, bytes: Array[Byte]): (RDD[_], (TaskContext, Iterator[_]) => _) = {
-    synchronized {
-      val loader = Thread.currentThread.getContextClassLoader
-      val in = new GZIPInputStream(new ByteArrayInputStream(bytes))
-      val ser = SparkEnv.get.closureSerializer.newInstance
-      val objIn = ser.deserializeStream(in)
-      val rdd = objIn.readObject().asInstanceOf[RDD[_]]
-      val func = objIn.readObject().asInstanceOf[(TaskContext, Iterator[_]) => _]
-      return (rdd, func)
-    }
+    val loader = Thread.currentThread.getContextClassLoader
+    val in = new GZIPInputStream(new ByteArrayInputStream(bytes))
+    val ser = SparkEnv.get.closureSerializer.newInstance
+    val objIn = ser.deserializeStream(in)
+    val rdd = objIn.readObject().asInstanceOf[RDD[_]]
+    val func = objIn.readObject().asInstanceOf[(TaskContext, Iterator[_]) => _]
+    return (rdd, func)
   }
 
   def clearCache() {
@@ -118,6 +116,7 @@ private[spark] class ResultTask[T, U](
       out.write(bytes)
       out.writeInt(partition)
       out.writeInt(outputId)
+      out.writeLong(generation)
       out.writeObject(split)
     }
   }
@@ -132,6 +131,7 @@ private[spark] class ResultTask[T, U](
     func = func_.asInstanceOf[(TaskContext, Iterator[T]) => U]
     partition = in.readInt()
     val outputId = in.readInt()
+    generation = in.readLong()
     split = in.readObject().asInstanceOf[Partition]
   }
 }

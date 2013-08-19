@@ -27,6 +27,7 @@ import scala.collection.JavaConversions._
 import scala.collection.Map
 import scala.collection.generic.Growable
 import scala.collection.mutable.HashMap
+import scala.collection.mutable.ArrayBuffer
 import scala.collection.JavaConversions._
 import scala.util.DynamicVariable
 import scala.collection.mutable.{ConcurrentMap, HashMap}
@@ -60,8 +61,10 @@ import org.apache.mesos.MesosNativeLibrary
 import spark.deploy.{LocalSparkCluster, SparkHadoopUtil}
 import spark.partial.{ApproximateEvaluator, PartialResult}
 import spark.rdd.{CheckpointRDD, HadoopRDD, NewHadoopRDD, UnionRDD, ParallelCollectionRDD}
-import spark.scheduler.{DAGScheduler, DAGSchedulerSource, ResultTask, ShuffleMapTask, SparkListener, SplitInfo, Stage, StageInfo, TaskScheduler}
-import spark.scheduler.cluster.{StandaloneSchedulerBackend, SparkDeploySchedulerBackend, ClusterScheduler}
+import spark.scheduler.{DAGScheduler, DAGSchedulerSource, ResultTask, ShuffleMapTask, SparkListener,
+  SplitInfo, Stage, StageInfo, TaskScheduler, ActiveJob}
+import spark.scheduler.cluster.{StandaloneSchedulerBackend, SparkDeploySchedulerBackend,
+  ClusterScheduler, Schedulable, SchedulingMode}
 import spark.scheduler.local.LocalScheduler
 import spark.scheduler.mesos.{CoarseMesosSchedulerBackend, MesosSchedulerBackend}
 import spark.storage.{StorageStatus, StorageUtils, RDDInfo, BlockManagerSource}
@@ -124,6 +127,8 @@ class SparkContext(
   // Initalize the Spark UI
   private[spark] val ui = new SparkUI(this)
   ui.bind()
+
+  val startTime = System.currentTimeMillis()
 
   // Add each JAR given through the constructor
   if (jars != null) {
@@ -262,12 +267,22 @@ class SparkContext(
       localProperties.value = new Properties()
   }
 
-  def addLocalProperties(key: String, value: String) {
-    if(localProperties.value == null) {
+  def setLocalProperty(key: String, value: String) {
+    if (localProperties.value == null) {
       localProperties.value = new Properties()
     }
-    localProperties.value.setProperty(key,value)
+    if (value == null) {
+      localProperties.value.remove(key)
+    } else {
+      localProperties.value.setProperty(key, value)
+    }
   }
+
+  /** Set a human readable description of the current job. */
+  def setJobDescription(value: String) {
+    setLocalProperty(SparkContext.SPARK_JOB_DESCRIPTION, value)
+  }
+
   // Post init
   taskScheduler.postStartHook()
 
@@ -536,7 +551,7 @@ class SparkContext(
   }
 
   def addSparkListener(listener: SparkListener) {
-    dagScheduler.sparkListeners += listener
+    dagScheduler.addSparkListener(listener)
   }
 
   /**
@@ -572,6 +587,28 @@ class SparkContext(
    */
   def getExecutorStorageStatus: Array[StorageStatus] = {
     env.blockManager.master.getStorageStatus
+  }
+
+  /**
+   *  Return pools for fair scheduler
+   *  TODO(xiajunluan): We should take nested pools into account
+   */
+  def getAllPools: ArrayBuffer[Schedulable] = {
+    taskScheduler.rootPool.schedulableQueue
+  }
+
+  /**
+   * Return the pool associated with the given name, if one exists
+   */
+  def getPoolForName(pool: String): Option[Schedulable] = {
+    taskScheduler.rootPool.schedulableNameToSchedulable.get(pool)
+  }
+
+  /**
+   *  Return current scheduling mode
+   */
+  def getSchedulingMode: SchedulingMode.SchedulingMode = {
+    taskScheduler.schedulingMode
   }
 
   /**
@@ -816,6 +853,7 @@ class SparkContext(
  * various Spark features.
  */
 object SparkContext {
+  val SPARK_JOB_DESCRIPTION = "spark.job.description"
 
   implicit object DoubleAccumulatorParam extends AccumulatorParam[Double] {
     def addInPlace(t1: Double, t2: Double): Double = t1 + t2
@@ -933,7 +971,6 @@ object SparkContext {
   }
 }
 
-
 /**
  * A class encapsulating how to convert some type T to Writable. It stores both the Writable class
  * corresponding to T (e.g. IntWritable for Int) and a function for doing the conversion.
@@ -945,3 +982,4 @@ private[spark] class WritableConverter[T](
     val writableClass: ClassManifest[T] => Class[_ <: Writable],
     val convert: Writable => T)
   extends Serializable
+

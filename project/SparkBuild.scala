@@ -40,13 +40,16 @@ object SparkBuild extends Build {
   //val HADOOP_MAJOR_VERSION = "2"
   //val HADOOP_YARN = true
 
+  // HBase version; set as appropriate.
+  val HBASE_VERSION = "0.94.6"
+
   lazy val root = Project("root", file("."), settings = rootSettings) aggregate(core, repl, examples, bagel, streaming, mllib, tools)
 
   lazy val core = Project("core", file("core"), settings = coreSettings)
 
-  lazy val repl = Project("repl", file("repl"), settings = replSettings) dependsOn (core)
+  lazy val repl = Project("repl", file("repl"), settings = replSettings) dependsOn (core) dependsOn(bagel) dependsOn(mllib)
 
-  lazy val examples = Project("examples", file("examples"), settings = examplesSettings) dependsOn (core) dependsOn (streaming)
+  lazy val examples = Project("examples", file("examples"), settings = examplesSettings) dependsOn (core) dependsOn (streaming) dependsOn(mllib)
 
   lazy val tools = Project("tools", file("tools"), settings = examplesSettings) dependsOn (core) dependsOn (streaming)
 
@@ -151,6 +154,7 @@ object SparkBuild extends Build {
   val excludeJackson = ExclusionRule(organization = "org.codehaus.jackson")
   val excludeNetty = ExclusionRule(organization = "org.jboss.netty")
   val excludeAsm = ExclusionRule(organization = "asm")
+  val excludeSnappy = ExclusionRule(organization = "org.xerial.snappy")
 
   def coreSettings = sharedSettings ++ Seq(
     name := "spark-core",
@@ -168,6 +172,7 @@ object SparkBuild extends Build {
       "org.slf4j" % "slf4j-log4j12" % slf4jVersion,
       "commons-daemon" % "commons-daemon" % "1.0.10",
       "com.ning" % "compress-lzf" % "0.8.4",
+      "org.xerial.snappy" % "snappy-java" % "1.0.5",
       "org.ow2.asm" % "asm" % "4.0",
       "com.google.protobuf" % "protobuf-java" % "2.4.1",
       "com.typesafe.akka" % "akka-actor" % "2.0.5" excludeAll(excludeNetty),
@@ -175,14 +180,14 @@ object SparkBuild extends Build {
       "com.typesafe.akka" % "akka-slf4j" % "2.0.5" excludeAll(excludeNetty),
       "it.unimi.dsi" % "fastutil" % "6.4.4",
       "colt" % "colt" % "1.2.0",
-      "net.liftweb" % "lift-json_2.9.2" % "2.5",
-      "org.apache.mesos" % "mesos" % "0.9.0-incubating",
+      "org.apache.mesos" % "mesos" % "0.12.1",
       "io.netty" % "netty-all" % "4.0.0.Beta2",
       "org.apache.derby" % "derby" % "10.4.2.0" % "test",
       "com.codahale.metrics" % "metrics-core" % "3.0.0",
       "com.codahale.metrics" % "metrics-jvm" % "3.0.0",
-      "com.twitter" % "chill_2.9.3" % "0.3.0",
-      "com.twitter" % "chill-java" % "0.3.0"
+      "com.codahale.metrics" % "metrics-json" % "3.0.0",
+      "com.twitter" % "chill_2.9.3" % "0.3.1",
+      "com.twitter" % "chill-java" % "0.3.1"
     ) ++ (
       if (HADOOP_MAJOR_VERSION == "2") {
         if (HADOOP_YARN) {
@@ -225,7 +230,7 @@ object SparkBuild extends Build {
     libraryDependencies ++= Seq(
       "com.twitter" % "algebird-core_2.9.2" % "0.1.11",
 
-      "org.apache.hbase" % "hbase" % "0.94.6" excludeAll(excludeNetty, excludeAsm),
+      "org.apache.hbase" % "hbase" % HBASE_VERSION excludeAll(excludeNetty, excludeAsm),
 
       "org.apache.cassandra" % "cassandra-all" % "1.2.5"
         exclude("com.google.guava", "guava")
@@ -235,6 +240,7 @@ object SparkBuild extends Build {
         exclude("jline","jline")
         exclude("log4j","log4j")
         exclude("org.apache.cassandra.deps", "avro")
+        excludeAll(excludeSnappy)
     )
   )
 
@@ -242,7 +248,9 @@ object SparkBuild extends Build {
     name := "spark-tools"
   )
 
-  def bagelSettings = sharedSettings ++ Seq(name := "spark-bagel")
+  def bagelSettings = sharedSettings ++ Seq(
+    name := "spark-bagel"
+  )
 
   def mllibSettings = sharedSettings ++ Seq(
     name := "spark-mllib",
@@ -257,7 +265,7 @@ object SparkBuild extends Build {
       "Akka Repository" at "http://repo.akka.io/releases/"
     ),
     libraryDependencies ++= Seq(
-      "org.apache.flume" % "flume-ng-sdk" % "1.2.0" % "compile" excludeAll(excludeNetty),
+      "org.apache.flume" % "flume-ng-sdk" % "1.2.0" % "compile" excludeAll(excludeNetty, excludeSnappy),
       "com.github.sgroschupf" % "zkclient" % "0.1" excludeAll(excludeNetty),
       "org.twitter4j" % "twitter4j-stream" % "3.0.3" excludeAll(excludeNetty),
       "com.typesafe.akka" % "akka-zeromq" % "2.0.5" excludeAll(excludeNetty)

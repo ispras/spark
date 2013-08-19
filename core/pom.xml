@@ -49,6 +49,10 @@
       <artifactId>compress-lzf</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.xerial.snappy</groupId>
+      <artifactId>snappy-java</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.ow2.asm</groupId>
       <artifactId>asm</artifactId>
     </dependency>
@@ -59,12 +63,12 @@
     <dependency>
       <groupId>com.twitter</groupId>
       <artifactId>chill_2.9.3</artifactId>
-      <version>0.3.0</version>
+      <version>0.3.1</version>
     </dependency>
     <dependency>
       <groupId>com.twitter</groupId>
       <artifactId>chill-java</artifactId>
-      <version>0.3.0</version>
+      <version>0.3.1</version>
     </dependency>
     <dependency>
       <groupId>com.typesafe.akka</groupId>
@@ -85,10 +89,6 @@
     <dependency>
       <groupId>org.scala-lang</groupId>
       <artifactId>scala-library</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>net.liftweb</groupId>
-      <artifactId>lift-json_2.9.2</artifactId>
     </dependency>
     <dependency>
       <groupId>it.unimi.dsi</groupId>
@@ -121,6 +121,10 @@
     <dependency>
       <groupId>com.codahale.metrics</groupId>
       <artifactId>metrics-jvm</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.codahale.metrics</groupId>
+      <artifactId>metrics-json</artifactId>
     </dependency>
 
     <dependency>

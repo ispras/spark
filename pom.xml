@@ -58,6 +58,7 @@
     <module>core</module>
     <module>bagel</module>
     <module>examples</module>
+    <module>mllib</module>
     <module>tools</module>
     <module>streaming</module>
     <module>repl</module>
@@ -69,7 +70,7 @@
 
     <java.version>1.5</java.version>
     <scala.version>2.9.3</scala.version>
-    <mesos.version>0.9.0-incubating</mesos.version>
+    <mesos.version>0.12.1</mesos.version>
     <akka.version>2.0.3</akka.version>
     <slf4j.version>1.7.2</slf4j.version>
     <cdh.version>4.1.2</cdh.version>
@@ -183,6 +184,11 @@
         <version>0.8.4</version>
       </dependency>
       <dependency>
+        <groupId>org.xerial.snappy</groupId>
+        <artifactId>snappy-java</artifactId>
+        <version>1.0.5</version>
+      </dependency>
+      <dependency>
         <groupId>org.ow2.asm</groupId>
         <artifactId>asm</artifactId>
         <version>4.0</version>
@@ -195,12 +201,12 @@
       <dependency>
         <groupId>com.twitter</groupId>
         <artifactId>chill_2.9.3</artifactId>
-        <version>0.3.0</version>
+        <version>0.3.1</version>
       </dependency>
       <dependency>
         <groupId>com.twitter</groupId>
         <artifactId>chill-java</artifactId>
-        <version>0.3.0</version>
+        <version>0.3.1</version>
       </dependency>
       <dependency>
         <groupId>com.typesafe.akka</groupId>
@@ -249,11 +255,6 @@
         <scope>test</scope>
       </dependency>
       <dependency>
-        <groupId>net.liftweb</groupId>
-        <artifactId>lift-json_2.9.2</artifactId>
-        <version>2.5</version>
-      </dependency>
-      <dependency>
         <groupId>com.codahale.metrics</groupId>
         <artifactId>metrics-core</artifactId>
         <version>3.0.0</version>
@@ -261,6 +262,11 @@
       <dependency>
         <groupId>com.codahale.metrics</groupId>
         <artifactId>metrics-jvm</artifactId>
+        <version>3.0.0</version>
+      </dependency>
+      <dependency>
+        <groupId>com.codahale.metrics</groupId>
+        <artifactId>metrics-json</artifactId>
         <version>3.0.0</version>
       </dependency>
       <dependency>
@@ -579,7 +585,7 @@
         <hadoop.major.version>2</hadoop.major.version>
         <!-- 0.23.* is same as 2.0.* - except hardened to run production jobs -->
         <!-- <yarn.version>0.23.7</yarn.version> -->
-        <yarn.version>2.0.2-alpha</yarn.version>
+        <yarn.version>2.0.5-alpha</yarn.version>
       </properties>
 
       <repositories>

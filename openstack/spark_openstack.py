@@ -100,8 +100,6 @@ def parse_args():
                            "the Ganglia page will be publicly accessible")
     parser.add_option("--no-ganglia", action="store_false", dest="ganglia",
                       help="Disable Ganglia monitoring for the cluster")
-#    parser.add_option("--old-scripts", action="store_true", default=False,
-#                      help="Use old mesos-ec2 scripts, for Spark <= 0.6 AMIs")
     parser.add_option("-u", "--user", default="root",
                       help="The SSH user you want to connect as (default: root)")
     parser.add_option("--delete-groups", action="store_true", default=False,
@@ -450,29 +448,21 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
     if opts.ganglia:
         modules.append('ganglia')
 
-#    if not opts.old_scripts:
-        # NOTE: We should clone the repository before running deploy_files to
-        # prevent ec2-variables.sh from being overwritten
-    ssh(master, opts, "rm -rf spark-ec2 && git clone https://github.com/ispras/spark-ec2.git")
+    ssh(master, opts, "git clone https://github.com/ispras/spark-openstack.git")
 
     print "Deploying files to master..."
     deploy_files(conn, "deploy.generic", opts, master_nodes, slave_nodes,
                  zoo_nodes, modules)
 
     print "Running setup on master..."
-#    if opts.old_scripts:
-#        if opts.cluster_type == "mesos":
-#            setup_mesos_cluster(master, opts)
-#        elif opts.cluster_type == "standalone":
-#            setup_standalone_cluster(master, slave_nodes, opts)
-#    else:
+
     setup_spark_cluster(master, opts)
     print "Done!"
 
 
 def setup_mesos_cluster(master, opts):
-    ssh(master, opts, "chmod u+x mesos-ec2/setup")
-    ssh(master, opts, "mesos-ec2/setup %s %s %s %s" %
+    ssh(master, opts, "chmod u+x mesos-openstack/setup")
+    ssh(master, opts, "mesos-openstack/setup %s %s %s %s" %
                       ("generic", "none", "master", opts.swap))
 
 
@@ -483,8 +473,8 @@ def setup_standalone_cluster(master, slave_nodes, opts):
 
 
 def setup_spark_cluster(master, opts):
-    ssh(master, opts, "chmod u+x spark-ec2/setup.sh")
-    ssh(master, opts, "spark-ec2/setup.sh")
+    ssh(master, opts, "chmod u+x spark-openstack/setup.sh")
+    ssh(master, opts, "spark-openstack/setup.sh")
     if opts.cluster_type == "mesos":
         print "Mesos cluster started at http://%s:8080" % master
     elif opts.cluster_type == "standalone":
@@ -582,7 +572,7 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
 
     print ("!!!!Going to rsync configuration")
     print (root_dir)
-    command = (("rsync -rv -e 'ssh -o StrictHostKeyChecking=no -i %s' " +
+    command = (("rsync -rv -e 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s' " +
                 "'%s/' '%s@%s:/'") % (opts.identity_file, tmp_dir, opts.user, active_master))
     print ("!!!!Rsynced configuration, details: id_file %s , tmp_dir: %s, user: %s, active_master: %s"  )  % (opts.identity_file, tmp_dir, opts.user, active_master)
     print (command)
@@ -595,7 +585,7 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
 # Copy a file to a given host through scp, throwing an exception if scp fails
 def scp(host, opts, local_file, dest_file):
     subprocess.check_call(
-        "scp -q -o UserKnownHostsFile=/dev/null,StrictHostKeyChecking=no -i %s '%s' '%s@%s:%s'" %
+        "scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s '%s' '%s@%s:%s'" %
         (opts.identity_file, local_file, opts.user, host, dest_file), shell=True)
 
 
@@ -606,7 +596,7 @@ def ssh(host, opts, command):
     while True:
         try:
             return subprocess.check_call(
-                "ssh -t -o StrictHostKeyChecking=no -i %s %s@%s '%s'" %
+                "ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s@%s '%s'" %
                 (opts.identity_file, opts.user, host, command), shell=True)
         except subprocess.CalledProcessError as e:
             if (tries > 2):
@@ -713,7 +703,7 @@ def main():
         proxy_opt = ""
         if opts.proxy_port != None:
             proxy_opt = "-D " + opts.proxy_port
-        subprocess.check_call("ssh -o StrictHostKeyChecking=no -i %s %s %s@%s" %
+        subprocess.check_call("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s %s@%s" %
                               (opts.identity_file, proxy_opt, opts.user, master), shell=True)
 
     elif action == "get-master":

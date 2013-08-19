@@ -164,17 +164,28 @@ def get_or_make_group(conn, name):
         return group[0]
     else:
         print "Creating security group " + name
-        group = conn.security_groups.create(name, "Spark Openstack" + name + " group")
-        return group[0]
+        group = conn.security_groups.create(name, "Spark Openstack " + name + " group")
+        return group
+
+
+# Openstack novaclient library can't update instance info, we need to do it manually
+def update_instances(conn, nodes_list):
+    new_nodes_list = []
+    number_of_nodes = len(nodes_list)
+    for node in nodes_list:
+            new_nodes_list.append( conn.servers.get(node.id))
+    if number_of_nodes != len(new_nodes_list):
+        print >> stderr, ("Some nodes disapperared, emergency")
+        sys.exit(1)
+    return new_nodes_list
 
 
 # Wait for a set of launched instances to exit the "pending" state
 # (i.e. either to start running or to fail and be terminated)
 def wait_for_instances(conn, instances):
     while True:
-        for i in instances:
-            i.update()
-        if len([i for i in instances if i.state == 'pending']) > 0:
+        instances = update_instances(conn, instances)
+        if len([i for i in instances if i.status == 'ACTIVE']) > 0:
             time.sleep(5)
         else:
             return
@@ -196,12 +207,20 @@ def authorize_group(conn, dst_group_id, protocols, from_port=1, to_port=65535, c
                           "in function authorize_group %d" % dst_group_id)
         sys.exit(1)
     for protocol in protocols:
-        conn.security_group_rules.create(parent_group_id=dst_group_id,
-                                         ip_protocol=protocol,
-                                         from_port=from_port,
-                                         to_port=to_port,
-                                         cidr=cidr,
-                                         group_id=src_group_id)
+        if protocol != 'icmp':
+            conn.security_group_rules.create(parent_group_id=dst_group_id,
+                                             ip_protocol=protocol,
+                                             from_port=from_port,
+                                             to_port=to_port,
+                                             cidr=cidr,
+                                             group_id=src_group_id)
+        else:
+            conn.security_group_rules.create(parent_group_id=dst_group_id,
+                                             ip_protocol=protocol,
+                                             from_port=-1,
+                                             to_port=-1,
+                                             cidr=cidr,
+                                             group_id=src_group_id)
 
 # Launch a cluster of the given name, by setting up its security groups,
 # and then starting new instances in them.
@@ -281,26 +300,27 @@ def launch_cluster(conn, opts, cluster_name):
 
     # Launch slaves first
     slave_nodes = []
-    for slave_id in (0, opts.slaves):
+    for slave_id in range (0, opts.slaves, 1):
         instance_name = cluster_name + "-slave-" + str(slave_id)
-        print (opts.instance_type)
+        flav_found = False
         for flav in conn.flavors.list():
             if flav.name == opts.instance_type:
                 print ("Instance type detected: " + opts.instance_type)
                 flavor = flav
-            else:
-                print >> stderr, "Could not find specified instance type for slave: " + opts.instance_type
-                sys.exit(1)
+                flav_found = True
+        if not flav_found:
+             print >> stderr, "Could not find specified instance type for slave: " + opts.instance_type
+             sys.exit(1)
 
 #TODO: need to implement floating IPs here.
 #TODO: implement quotas check here.
-        slave_nodes += conn.servers.create(name=instance_name,
+        slave_nodes.append( conn.servers.create(name=instance_name,
                                         image=image,
                                         security_groups={slave_group.name},
                                         key_name=opts.key_pair,
                                         flavor=flavor,
                                         min_count=1,
-                                        max_count=1)
+                                        max_count=1))
     print "Launched %d slaves" % opts.slaves
 
     # Launch master
@@ -310,20 +330,22 @@ def launch_cluster(conn, opts, cluster_name):
         master_type = opts.instance_type
     master_nodes = []
     instance_name = cluster_name + "-master"
+    flav_found = False
     for flav in conn.flavors.list():
         if flav.name == master_type:
             print ("Instance type detected: " + opts.instance_type)
             flavor = flav
-        else:
-            print >> stderr, "Could not find specified instance type for master: " + master_type
-            sys.exit(1)
-    master_nodes += conn.servers.create(name=instance_name,
+            flav_found = True
+    if not flav_found:
+         print >> stderr, "Could not find specified instance type for slave: " + opts.instance_type
+         sys.exit(1)
+    master_nodes.append(conn.servers.create(name=instance_name,
                                      image=image,
                                      security_groups={master_group.name},
                                      key_name=opts.key_pair,
                                      flavor=flavor,
                                      min_count=1,
-                                     max_count=1)
+                                     max_count=1))
 
     print "Launched master"
 
@@ -333,8 +355,8 @@ def launch_cluster(conn, opts, cluster_name):
     return (master_nodes, slave_nodes, zoo_nodes)
 
 
-# Get the EC2 instances in an existing cluster if available.
-# Returns a tuple of lists of EC2 instance objects for the masters,
+# Get instances in an existing cluster if available.
+# Returns a tuple of lists of instance objects for the masters,
 # slaves and zookeeper nodes (in that order).
 def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
     print "Searching for existing cluster " + cluster_name + "..."
@@ -347,11 +369,11 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
         if active:
             group_names = [g["name"] for g in res.security_groups]
             if cluster_name + "-master" in group_names:
-                master_nodes += res
+                master_nodes.append(res)
             elif cluster_name + "-slaves" in group_names:
-                slave_nodes += res
+                slave_nodes.append(res)
             elif cluster_name + "-zoo" in group_names:
-                zoo_nodes += res
+                zoo_nodes.append(res)
     if any((master_nodes, slave_nodes, zoo_nodes)):
         print ("Found %d master(s), %d slaves, %d ZooKeeper nodes" %
                (len(master_nodes), len(slave_nodes), len(zoo_nodes)))
@@ -389,6 +411,7 @@ def get_address_by_instance_object(node, opts):
         print >> stderr, "Instance didn't get fixed address, that's an error."
         sys.exit(1)
     elif comm_method == "floating":
+        print node.addresses
         for address in node.addresses["private"]:
             if address["OS-EXT-IPS:type"] == "floating":
                 return address["addr"]
@@ -409,6 +432,9 @@ def get_address_by_instance_object(node, opts):
 # Deploy configuration files and run setup scripts on a newly launched
 # or started EC2 cluster.
 def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_key):
+    master_nodes = update_instances(conn, master_nodes)
+    slave_nodes = update_instances(conn, slave_nodes)
+    zoo_nodes = update_instances(conn, zoo_nodes)
     master = get_address_by_instance_object(node=master_nodes[0], opts=opts)
     if deploy_ssh_key:
         print "Copying SSH key %s to master..." % opts.identity_file
@@ -424,23 +450,23 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
     if opts.ganglia:
         modules.append('ganglia')
 
-    if not opts.old_scripts:
+#    if not opts.old_scripts:
         # NOTE: We should clone the repository before running deploy_files to
         # prevent ec2-variables.sh from being overwritten
-        ssh(master, opts, "rm -rf spark-ec2 && git clone https://github.com/ispras/spark-ec2.git")
+    ssh(master, opts, "rm -rf spark-ec2 && git clone https://github.com/ispras/spark-ec2.git")
 
     print "Deploying files to master..."
     deploy_files(conn, "deploy.generic", opts, master_nodes, slave_nodes,
                  zoo_nodes, modules)
 
     print "Running setup on master..."
-    if opts.old_scripts:
-        if opts.cluster_type == "mesos":
-            setup_mesos_cluster(master, opts)
-        elif opts.cluster_type == "standalone":
-            setup_standalone_cluster(master, slave_nodes, opts)
-    else:
-        setup_spark_cluster(master, opts)
+#    if opts.old_scripts:
+#        if opts.cluster_type == "mesos":
+#            setup_mesos_cluster(master, opts)
+#        elif opts.cluster_type == "standalone":
+#            setup_standalone_cluster(master, slave_nodes, opts)
+#    else:
+    setup_spark_cluster(master, opts)
     print "Done!"
 
 
@@ -451,7 +477,7 @@ def setup_mesos_cluster(master, opts):
 
 
 def setup_standalone_cluster(master, slave_nodes, opts):
-    slave_ips = '\n'.join([i.public_dns_name for i in slave_nodes])
+    slave_ips = '\n'.join([get_address_by_instance_object(i,opts) for i in slave_nodes])
     ssh(master, opts, "echo \"%s\" > spark/conf/slaves" % (slave_ips))
     ssh(master, opts, "/root/spark/bin/start-all.sh")
 
@@ -487,8 +513,10 @@ def wait_for_cluster(conn, wait_secs, master_nodes, slave_nodes, zoo_nodes):
 # script to be run on that instance to copy them to other nodes.
 def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
                  modules):
-# TODO: 1) implement floating IPs support and make it default
-#       2) check if configurations with "public" addresses exist (or maybe return public_dns_name)
+#TODO: check if configurations with "public" addresses exist (or maybe return public_dns_name)
+    master_nodes = update_instances(conn, master_nodes)
+    slave_nodes = update_instances(conn, slave_nodes)
+    zoo_nodes = update_instances(conn, zoo_nodes)
     active_master = get_address_by_instance_object(node=master_nodes[0], opts=opts)
 
     num_disks = get_num_disks(opts.instance_type)
@@ -551,17 +579,23 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
                             dest.write(text)
                             dest.close()
         # rsync the whole directory over to the master machine
+
+    print ("!!!!Going to rsync configuration")
+    print (root_dir)
     command = (("rsync -rv -e 'ssh -o StrictHostKeyChecking=no -i %s' " +
                 "'%s/' '%s@%s:/'") % (opts.identity_file, tmp_dir, opts.user, active_master))
+    print ("!!!!Rsynced configuration, details: id_file %s , tmp_dir: %s, user: %s, active_master: %s"  )  % (opts.identity_file, tmp_dir, opts.user, active_master)
+    print (command)
+    print template_vars
     subprocess.check_call(command, shell=True)
     # Remove the temp directory we created above
-    shutil.rmtree(tmp_dir)
+#    shutil.rmtree(tmp_dir)
 
 
 # Copy a file to a given host through scp, throwing an exception if scp fails
 def scp(host, opts, local_file, dest_file):
     subprocess.check_call(
-        "scp -q -o StrictHostKeyChecking=no -i %s '%s' '%s@%s:%s'" %
+        "scp -q -o UserKnownHostsFile=/dev/null,StrictHostKeyChecking=no -i %s '%s' '%s@%s:%s'" %
         (opts.identity_file, local_file, opts.user, host, dest_file), shell=True)
 
 
@@ -592,7 +626,6 @@ def main():
                                     service_type="compute")
         conn.authenticate()
 
-        print(conn.__dict__)
     except Exception as e:
         print >> stderr, (e)
         sys.exit(1)
@@ -605,6 +638,9 @@ def main():
             (master_nodes, slave_nodes, zoo_nodes) = launch_cluster(
                 conn, opts, cluster_name)
             wait_for_cluster(conn, opts.wait, master_nodes, slave_nodes, zoo_nodes)
+            master_nodes = update_instances(conn,master_nodes)
+            slave_nodes = update_instances(conn,slave_nodes)
+            zoo_nodes = update_instances(conn,zoo_nodes)
         setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, True)
 
     elif action == "destroy":
@@ -616,14 +652,14 @@ def main():
                 conn, opts, cluster_name, die_on_error=False)
             print "Terminating master..."
             for inst in master_nodes:
-                inst.terminate()
+                inst.delete()
             print "Terminating slaves..."
             for inst in slave_nodes:
-                inst.terminate()
+                inst.delete()
             if zoo_nodes != []:
                 print "Terminating zoo..."
                 for inst in zoo_nodes:
-                    inst.terminate()
+                    inst.delete()
 
             # Delete security groups as well
             if opts.delete_groups:
@@ -672,7 +708,7 @@ def main():
     elif action == "login":
         (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(
             conn, opts, cluster_name)
-        master = master_nodes[0].public_dns_name
+        master = get_address_by_instance_object(node=master_nodes[0],opts=opts)
         print "Logging into master " + master + "..."
         proxy_opt = ""
         if opts.proxy_port != None:
@@ -724,6 +760,9 @@ def main():
                 if inst.status not in ["DELETED"]:
                     inst.start()
         wait_for_cluster(conn, opts.wait, master_nodes, slave_nodes, zoo_nodes)
+        master_nodes = update_instances(conn, master_nodes)
+        slave_nodes = update_instances(conn, slave_nodes)
+        zoo_nodes = update_instance(conn, zoo_nodes)
         setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, False)
 
     else:

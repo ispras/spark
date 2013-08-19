@@ -1,0 +1,15 @@
+This folder contains a script (spark-openstack) for launching Spark clusters on
+Openstack cloud platform.
+
+IMPORTANT NOTES:
+1) Development is at early stage so it's not recommended to use the script in production right now
+2) At this stage the script has two dependencies: boto v2.9.9 (it's included as a zip file) and
+   python-novaclient v1.1. You should install it with "sudo pip install python-novaclient" to get script
+   working.
+3) At this stage you need to have both Openstack-style and Amazon-ec2 style credentials to run the script.
+4) You need special VM-image to be deployed on your openstack, it will be available a bit later in public.
+5) You need to correct file "flavors.py" to correspond your Openstack instance types. We need it because
+   in typical Openstack installation we have only one Ephemeral disk device.
+6) A little later we will get rid of boto dependency and everything will be cool.
+7) It's possible to launch instances in one zone only
+8) You must have ephemeral disk in instance type defined; otherwise script will fail. HDFS etc are created there

@@ -34,6 +34,10 @@ from optparse import OptionParser
 from sys import stderr
 
 from flavors import get_num_disks
+from networks import openstack_networks
+from networks import openstack_network_settings
+
+from retry import retry
 
 #sys.path.append(os.path.join(os.path.dirname(__file__), 'third_party/boto-2.9.9'))
 
@@ -42,6 +46,11 @@ from flavors import get_num_disks
 #from boto import ec2
 
 from novaclient.v1_1 import client
+import novaclient.exceptions
+
+#it's
+
+from pprint import pprint
 
 # A static URL from which to figure out the latest Mesos EC2 AMI
 LATEST_AMI_URL = "https://s3.amazonaws.com/mesos-images/ids/latest-spark-0.7"
@@ -105,13 +114,21 @@ def parse_args():
     parser.add_option("--delete-groups", action="store_true", default=False,
                       help="When destroying a cluster, delete the security groups that were created")
     parser.add_option("-l", "--openstack-login",
-                      help="Your login name in Openstack")
+                      help="""Your login name in Openstack
+                      You can use 'OS_LOGIN'=<your_login> environment variable
+                      instead of this option""")
     parser.add_option("-p", "--openstack-password",
-                      help="Your password for Openstack")
+                      help="""Your password for Openstack.
+                      You can use 'OS_PASSWORD'=<your_password> environment variable
+                      instead of this option""")
     parser.add_option("-T", "--openstack-tenant-name",
-                      help="Your tenant name in Openstack")
+                      help="""Your tenant name in Openstack
+                      You can use 'OS_TENANT_NAME'=<your_tenant_name> environment variable
+                      instead of this option""")
     parser.add_option("-d", "--openstack-address",
-                      help="Openstack auth url with port (e.g. http://10.10.10.121:5000/v2.0) ")
+                      help="""Openstack auth url with port (e.g. http://10.10.10.121:5000/v2.0)
+                      You can use 'OS_AUTH_URL'=<openstack_auth_url> environment variable
+                      instead of this option""")
     parser.add_option("-n", "--openstack-network-communication-method", type="choice", metavar="NET",
                       choices=["fixed", "floating", "public-dns-name"], default="fixed",
                       help="""Openstack communication way with instances. Choose between 'fixed', 'floating' and
@@ -122,36 +139,101 @@ def parse_args():
         parser.print_help()
         sys.exit(1)
     (action, cluster_name) = args
-    if opts.identity_file == None and action in ['launch', 'login', 'start']:
+    if opts.identity_file is None and action in ['launch', 'login', 'start']:
         print >> stderr, ("ERROR: The -i or --identity-file argument is " +
                           "required for " + action)
         sys.exit(1)
-    if opts.image_id == None and action in ['launch', 'login', 'start']:
+    if opts.image_id is None and action in ['launch', 'login', 'start']:
         print >> stderr, ("ERROR: The -a or --image-id argument is " +
                           "required to " + action)
         sys.exit(1)
 
-    if opts.openstack_login == None:
-        print >> stderr, ("ERROR: The -l or --openstack-login argument is " +
-                          "required for any action")
-        sys.exit(1)
-    if opts.openstack_password == None:
-        print >> stderr, ("ERROR: The -p or --openstack-password argument is " +
-                          "required for any action")
-        sys.exit(1)
-    if opts.openstack_tenant_name == None:
-        print >> stderr, ("ERROR: The -t or --openstack-tenant-name argument is " +
-                          "required for any action")
-        sys.exit(1)
-    if opts.openstack_address == None:
-        print >> stderr, ("ERROR: The -d or --openstack-address argument is " +
-                          "required for any action")
-        sys.exit(1)
+    if opts.openstack_login is None:
+        openstack_login_env = os.getenv('OS_USERNAME')
+        if openstack_login_env is None:
+            print >> stderr, ("""ERROR: The -l or --openstack-login argument is
+                                 required for any action. Also you can use environment variable
+                                'OS_USERNAME'
+                                 instead of parameter.
+                                 """)
+            sys.exit(1)
+        else:
+            opts.openstack_login = openstack_login_env
+
+    if opts.openstack_password is None:
+        openstack_password_env = os.getenv('OS_PASSWORD')
+        if openstack_password_env is None:
+            print >> stderr, ("""ERROR: The -p or --openstack-password argument is
+                                 required for any action. Also you can use environment variable
+                                'OS_PASSWORD'
+                                 instead of parameter.
+                                 """)
+            sys.exit(1)
+        else:
+            opts.openstack_password = openstack_password_env
+
+    if opts.openstack_tenant_name is None:
+        openstack_tenant_env = os.getenv('OS_TENANT_NAME')
+        if openstack_tenant_env is None:
+            print >> stderr, ("""ERROR: The -t or --openstack-tenant-name argument is
+                                 required for any action. Also you can use environment variable
+                                 'OS_TENANT_NAME'
+                                 instead of parameter.
+                                 """)
+            sys.exit(1)
+        else:
+            opts.openstack_tenant_name = openstack_tenant_env
+
+    if opts.openstack_address is None:
+        openstack_address_env = os.getenv('OS_AUTH_URL')
+        if openstack_address_env is None:
+            print >> stderr, ("""ERROR: The -d or --openstack-address argument is
+                              required for any action. Also you can use environment variable
+                              'OS_AUTH_URL'
+                              instead of parameter.
+                              """)
+            sys.exit(1)
+
+        else:
+            opts.openstack_address = openstack_address_env
+
     if opts.cluster_type not in ["mesos", "standalone"] and action == "launch":
         print >> stderr, ("ERROR: Invalid cluster type: " + opts.cluster_type)
         sys.exit(1)
 
     return (opts, action, cluster_name)
+
+
+# Retry wrappers around novaclient calls. We need it because novaclient can't handle
+# openstack api time limits
+@retry(novaclient.exceptions.OverLimit, tries=4, delay=5, backoff=3)
+def group_create_with_retry(conn, parent_group_id, ip_protocol, from_port, to_port, cidr, group_id):
+    conn.security_group_rules.create(parent_group_id=parent_group_id,
+                                     ip_protocol=ip_protocol,
+                                     from_port=from_port,
+                                     to_port=to_port,
+                                     cidr=cidr,
+                                     group_id=group_id)
+
+@retry(novaclient.exceptions.OverLimit, tries=4, delay=5, backoff=3)
+def instance_create_with_retry(conn, name, image, security_groups, key_name, flavor, nics):
+    return conn.servers.create(name=name,
+                               image=image,
+                               security_groups=security_groups,
+                               key_name=key_name,
+                               flavor=flavor,
+                               nics=nics
+                               )
+
+@retry(novaclient.exceptions.OverLimit, tries=4, delay=5, backoff=3)
+def find_flavor(conn, instance_type):
+    for flavor in conn.flavors.list():
+        if flavor.name == instance_type:
+            print ("Instance type detected: " + instance_type)
+            return flavor
+#if we get here, we didn't find anything
+    print >> stderr, "Could not find specified instance type for slave: " + instance_type
+    sys.exit(1)
 
 
 # Get the Openstack security group of the given name, creating it if it doesn't exist
@@ -204,21 +286,29 @@ def authorize_group(conn, dst_group_id, protocols, from_port=1, to_port=65535, c
         print >> stderr, ("ERROR: This should never happen, assertion " +
                           "in function authorize_group %d" % dst_group_id)
         sys.exit(1)
-    for protocol in protocols:
-        if protocol != 'icmp':
-            conn.security_group_rules.create(parent_group_id=dst_group_id,
-                                             ip_protocol=protocol,
-                                             from_port=from_port,
-                                             to_port=to_port,
-                                             cidr=cidr,
-                                             group_id=src_group_id)
-        else:
-            conn.security_group_rules.create(parent_group_id=dst_group_id,
-                                             ip_protocol=protocol,
-                                             from_port=-1,
-                                             to_port=-1,
-                                             cidr=cidr,
-                                             group_id=src_group_id)
+    try:
+        for protocol in protocols:
+            if protocol != 'icmp':
+                group_create_with_retry(conn,
+                                        dst_group_id,
+                                        protocol,
+                                        from_port,
+                                        to_port,
+                                        cidr,
+                                        src_group_id)
+            else:
+                group_create_with_retry(conn,
+                                        dst_group_id,
+                                        protocol,
+                                        -1,
+                                        -1,
+                                        cidr,
+                                        src_group_id)
+
+    except novaclient.exceptions.OverLimit as e:
+        pprint(e.__dict__)
+        pprint(e.details)
+
 
 # Launch a cluster of the given name, by setting up its security groups,
 # and then starting new instances in them.
@@ -300,25 +390,17 @@ def launch_cluster(conn, opts, cluster_name):
     slave_nodes = []
     for slave_id in range (0, opts.slaves, 1):
         instance_name = cluster_name + "-slave-" + str(slave_id)
-        flav_found = False
-        for flav in conn.flavors.list():
-            if flav.name == opts.instance_type:
-                print ("Instance type detected: " + opts.instance_type)
-                flavor = flav
-                flav_found = True
-        if not flav_found:
-             print >> stderr, "Could not find specified instance type for slave: " + opts.instance_type
-             sys.exit(1)
+        flavor = find_flavor(conn, opts.instance_type)
 
 #TODO: need to implement floating IPs here.
 #TODO: implement quotas check here.
-        slave_nodes.append( conn.servers.create(name=instance_name,
-                                        image=image,
-                                        security_groups={slave_group.name},
-                                        key_name=opts.key_pair,
-                                        flavor=flavor,
-                                        min_count=1,
-                                        max_count=1))
+        slave_nodes.append(instance_create_with_retry(conn,
+                                                      instance_name,
+                                                      image,
+                                                      [slave_group.name],
+                                                      opts.key_pair,
+                                                      flavor,
+                                                      openstack_networks))
     print "Launched %d slaves" % opts.slaves
 
     # Launch master
@@ -328,23 +410,14 @@ def launch_cluster(conn, opts, cluster_name):
         master_type = opts.instance_type
     master_nodes = []
     instance_name = cluster_name + "-master"
-    flav_found = False
-    for flav in conn.flavors.list():
-        if flav.name == master_type:
-            print ("Instance type detected: " + opts.instance_type)
-            flavor = flav
-            flav_found = True
-    if not flav_found:
-         print >> stderr, "Could not find specified instance type for slave: " + opts.instance_type
-         sys.exit(1)
-    master_nodes.append(conn.servers.create(name=instance_name,
-                                     image=image,
-                                     security_groups={master_group.name},
-                                     key_name=opts.key_pair,
-                                     flavor=flavor,
-                                     min_count=1,
-                                     max_count=1))
-
+    flavor = find_flavor(conn, master_type)
+    master_nodes.append(instance_create_with_retry(conn,
+                                                   instance_name,
+                                                   image,
+                                                   [master_group.name],
+                                                   opts.key_pair,
+                                                   flavor,
+                                                   openstack_networks))
     print "Launched master"
 
     zoo_nodes = []
@@ -399,8 +472,12 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
 #    this way (I don't know why)
 #
 # Thus, this function resolves the way to communicate with instances based on input options.
-def get_address_by_instance_object(node, opts):
+def get_address_by_instance_object(conn, node, opts, internal=False):
     comm_method = opts.openstack_network_communication_method
+    if internal:
+        for address in node.addresses["local"]:
+            if address["OS-EXT-IPS:type"] == "fixed":
+                return address["addr"]
     if comm_method == "fixed":
         for address in node.addresses["private"]:
             if address["OS-EXT-IPS:type"] == "fixed":
@@ -409,13 +486,20 @@ def get_address_by_instance_object(node, opts):
         print >> stderr, "Instance didn't get fixed address, that's an error."
         sys.exit(1)
     elif comm_method == "floating":
-        print node.addresses
-        for address in node.addresses["private"]:
-            if address["OS-EXT-IPS:type"] == "floating":
-                return address["addr"]
-        # if we get here, then instance doesn't have an address => error
-        print >> stderr, "Instance didn't get floating address, that's an error."
-        sys.exit(1)
+        #First we check, if we have already assigned floating ip to the node
+        for float_address in conn.floating_ips.list():
+            if float_address.instance_id == node.id:
+                return float_address.ip
+        #If we haven't we check already allocated addresses, if they are free
+        for float_address in conn.floating_ips.list():
+            if float_address.instance_id is None:
+                node.add_floating_ip(address=float_address)
+                return float_address.ip
+        #If we have no available floating addresses we need to allocate one
+        addr_to_assign = conn.floating_ips.create(openstack_network_settings['floating_ips_pool_name'])
+        node.add_floating_ip(address=addr_to_assign)
+        return addr_to_assign.ip
+
     elif comm_method == "public-dns-address":
         if node.accessIPv4 == '':
             print >> stderr, "Instance didn't get public dns name, that's an error."
@@ -433,7 +517,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
     master_nodes = update_instances(conn, master_nodes)
     slave_nodes = update_instances(conn, slave_nodes)
     zoo_nodes = update_instances(conn, zoo_nodes)
-    master = get_address_by_instance_object(node=master_nodes[0], opts=opts)
+    master = get_address_by_instance_object(conn=conn, node=master_nodes[0], opts=opts)
     if deploy_ssh_key:
         print "Copying SSH key %s to master..." % opts.identity_file
         ssh(master, opts, 'mkdir -p ~/.ssh')
@@ -447,7 +531,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
 
     if opts.ganglia:
         modules.append('ganglia')
-
+#TODO: change it before pushes
     ssh(master, opts, "git clone https://github.com/ispras/spark-openstack.git")
 
     print "Deploying files to master..."
@@ -467,7 +551,7 @@ def setup_mesos_cluster(master, opts):
 
 
 def setup_standalone_cluster(master, slave_nodes, opts):
-    slave_ips = '\n'.join([get_address_by_instance_object(i,opts) for i in slave_nodes])
+    slave_ips = '\n'.join([get_address_by_instance_object(conn,i,opts,True) for i in slave_nodes])
     ssh(master, opts, "echo \"%s\" > spark/conf/slaves" % (slave_ips))
     ssh(master, opts, "/root/spark/bin/start-all.sh")
 
@@ -507,8 +591,8 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
     master_nodes = update_instances(conn, master_nodes)
     slave_nodes = update_instances(conn, slave_nodes)
     zoo_nodes = update_instances(conn, zoo_nodes)
-    active_master = get_address_by_instance_object(node=master_nodes[0], opts=opts)
-
+    active_master = get_address_by_instance_object(conn=conn, node=master_nodes[0], opts=opts)
+    active_master_internal = get_address_by_instance_object(conn=conn, node=master_nodes[0], opts=opts, internal=True)
     num_disks = get_num_disks(opts.instance_type)
     hdfs_data_dirs = "/mnt/ephemeral-hdfs/data"
     mapred_local_dirs = "/mnt/hadoop/mrlocal"
@@ -536,9 +620,9 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
         cluster_url = "%s:7077" % active_master
 
     template_vars = {
-        "master_list": '\n'.join([get_address_by_instance_object(i, opts) for i in master_nodes]),
-        "active_master": active_master,
-        "slave_list": '\n'.join([get_address_by_instance_object(i, opts) for i in slave_nodes]),
+        "master_list": '\n'.join([get_address_by_instance_object(conn, i, opts, True) for i in master_nodes]),
+        "active_master": active_master_internal,
+        "slave_list": '\n'.join([get_address_by_instance_object(conn, i, opts, True) for i in slave_nodes]),
         "zoo_list": zoo_list,
         "cluster_url": cluster_url,
         "hdfs_data_dirs": hdfs_data_dirs,
@@ -570,13 +654,9 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
                             dest.close()
         # rsync the whole directory over to the master machine
 
-    print ("!!!!Going to rsync configuration")
     print (root_dir)
     command = (("rsync -rv -e 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s' " +
                 "'%s/' '%s@%s:/'") % (opts.identity_file, tmp_dir, opts.user, active_master))
-    print ("!!!!Rsynced configuration, details: id_file %s , tmp_dir: %s, user: %s, active_master: %s"  )  % (opts.identity_file, tmp_dir, opts.user, active_master)
-    print (command)
-    print template_vars
     subprocess.check_call(command, shell=True)
     # Remove the temp directory we created above
 #    shutil.rmtree(tmp_dir)
@@ -610,10 +690,11 @@ def main():
     (opts, action, cluster_name) = parse_args()
     try:
         conn = client.Client(opts.openstack_login,
-                                    opts.openstack_password,
-                                    opts.openstack_tenant_name,
-                                    opts.openstack_address,
-                                    service_type="compute")
+                             opts.openstack_password,
+                             opts.openstack_tenant_name,
+                             opts.openstack_address,
+                             service_type="compute")
+
         conn.authenticate()
 
     except Exception as e:
@@ -698,7 +779,7 @@ def main():
     elif action == "login":
         (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(
             conn, opts, cluster_name)
-        master = get_address_by_instance_object(node=master_nodes[0],opts=opts)
+        master = get_address_by_instance_object(conn=conn, node=master_nodes[0],opts=opts)
         print "Logging into master " + master + "..."
         proxy_opt = ""
         if opts.proxy_port != None:
@@ -708,7 +789,7 @@ def main():
 
     elif action == "get-master":
         (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(conn, opts, cluster_name)
-        print get_address_by_instance_object(node=master_nodes[0], opts=opts)
+        print get_address_by_instance_object(conn, node=master_nodes[0], opts=opts)
 
     elif action == "stop":
         response = raw_input("Are you sure you want to stop the cluster " +

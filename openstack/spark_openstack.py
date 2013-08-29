@@ -34,6 +34,8 @@ from optparse import OptionParser
 from sys import stderr
 
 from flavors import get_num_disks
+from networks import openstack_networks
+from networks import openstack_network_settings
 
 from retry import retry
 
@@ -214,14 +216,14 @@ def group_create_with_retry(conn, parent_group_id, ip_protocol, from_port, to_po
                                      group_id=group_id)
 
 @retry(novaclient.exceptions.OverLimit, tries=4, delay=5, backoff=3)
-def instance_create_with_retry(conn, name, image, security_groups, key_name, flavor):
+def instance_create_with_retry(conn, name, image, security_groups, key_name, flavor, nics):
     return conn.servers.create(name=name,
                                image=image,
                                security_groups=security_groups,
                                key_name=key_name,
                                flavor=flavor,
-                               min_count=1,
-                               max_count=1)
+                               nics=nics
+                               )
 
 @retry(novaclient.exceptions.OverLimit, tries=4, delay=5, backoff=3)
 def find_flavor(conn, instance_type):
@@ -395,9 +397,10 @@ def launch_cluster(conn, opts, cluster_name):
         slave_nodes.append(instance_create_with_retry(conn,
                                                       instance_name,
                                                       image,
-                                                      {slave_group.name},
+                                                      [slave_group.name],
                                                       opts.key_pair,
-                                                      flavor))
+                                                      flavor,
+                                                      openstack_networks))
     print "Launched %d slaves" % opts.slaves
 
     # Launch master
@@ -411,9 +414,10 @@ def launch_cluster(conn, opts, cluster_name):
     master_nodes.append(instance_create_with_retry(conn,
                                                    instance_name,
                                                    image,
-                                                   {master_group.name},
+                                                   [master_group.name],
                                                    opts.key_pair,
-                                                   flavor))
+                                                   flavor,
+                                                   openstack_networks))
     print "Launched master"
 
     zoo_nodes = []
@@ -468,8 +472,12 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
 #    this way (I don't know why)
 #
 # Thus, this function resolves the way to communicate with instances based on input options.
-def get_address_by_instance_object(node, opts):
+def get_address_by_instance_object(conn, node, opts, internal=False):
     comm_method = opts.openstack_network_communication_method
+    if internal:
+        for address in node.addresses["local"]:
+            if address["OS-EXT-IPS:type"] == "fixed":
+                return address["addr"]
     if comm_method == "fixed":
         for address in node.addresses["private"]:
             if address["OS-EXT-IPS:type"] == "fixed":
@@ -478,13 +486,20 @@ def get_address_by_instance_object(node, opts):
         print >> stderr, "Instance didn't get fixed address, that's an error."
         sys.exit(1)
     elif comm_method == "floating":
-        print node.addresses
-        for address in node.addresses["private"]:
-            if address["OS-EXT-IPS:type"] == "floating":
-                return address["addr"]
-        # if we get here, then instance doesn't have an address => error
-        print >> stderr, "Instance didn't get floating address, that's an error."
-        sys.exit(1)
+        #First we check, if we have already assigned floating ip to the node
+        for float_address in conn.floating_ips.list():
+            if float_address.instance_id == node.id:
+                return float_address.ip
+        #If we haven't we check already allocated addresses, if they are free
+        for float_address in conn.floating_ips.list():
+            if float_address.instance_id is None:
+                node.add_floating_ip(address=float_address)
+                return float_address.ip
+        #If we have no available floating addresses we need to allocate one
+        addr_to_assign = conn.floating_ips.create(openstack_network_settings['floating_ips_pool_name'])
+        node.add_floating_ip(address=addr_to_assign)
+        return addr_to_assign.ip
+
     elif comm_method == "public-dns-address":
         if node.accessIPv4 == '':
             print >> stderr, "Instance didn't get public dns name, that's an error."
@@ -502,7 +517,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
     master_nodes = update_instances(conn, master_nodes)
     slave_nodes = update_instances(conn, slave_nodes)
     zoo_nodes = update_instances(conn, zoo_nodes)
-    master = get_address_by_instance_object(node=master_nodes[0], opts=opts)
+    master = get_address_by_instance_object(conn=conn, node=master_nodes[0], opts=opts)
     if deploy_ssh_key:
         print "Copying SSH key %s to master..." % opts.identity_file
         ssh(master, opts, 'mkdir -p ~/.ssh')
@@ -517,7 +532,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
     if opts.ganglia:
         modules.append('ganglia')
 #TODO: change it before pushes
-    ssh(master, opts, "git clone https://github.com/al-indigo/spark-openstack.git")
+    ssh(master, opts, "git clone https://github.com/ispras/spark-openstack.git")
 
     print "Deploying files to master..."
     deploy_files(conn, "deploy.generic", opts, master_nodes, slave_nodes,
@@ -536,7 +551,7 @@ def setup_mesos_cluster(master, opts):
 
 
 def setup_standalone_cluster(master, slave_nodes, opts):
-    slave_ips = '\n'.join([get_address_by_instance_object(i,opts) for i in slave_nodes])
+    slave_ips = '\n'.join([get_address_by_instance_object(conn,i,opts,True) for i in slave_nodes])
     ssh(master, opts, "echo \"%s\" > spark/conf/slaves" % (slave_ips))
     ssh(master, opts, "/root/spark/bin/start-all.sh")
 
@@ -576,8 +591,8 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
     master_nodes = update_instances(conn, master_nodes)
     slave_nodes = update_instances(conn, slave_nodes)
     zoo_nodes = update_instances(conn, zoo_nodes)
-    active_master = get_address_by_instance_object(node=master_nodes[0], opts=opts)
-
+    active_master = get_address_by_instance_object(conn=conn, node=master_nodes[0], opts=opts)
+    active_master_internal = get_address_by_instance_object(conn=conn, node=master_nodes[0], opts=opts, internal=True)
     num_disks = get_num_disks(opts.instance_type)
     hdfs_data_dirs = "/mnt/ephemeral-hdfs/data"
     mapred_local_dirs = "/mnt/hadoop/mrlocal"
@@ -605,9 +620,9 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
         cluster_url = "%s:7077" % active_master
 
     template_vars = {
-        "master_list": '\n'.join([get_address_by_instance_object(i, opts) for i in master_nodes]),
-        "active_master": active_master,
-        "slave_list": '\n'.join([get_address_by_instance_object(i, opts) for i in slave_nodes]),
+        "master_list": '\n'.join([get_address_by_instance_object(conn, i, opts, True) for i in master_nodes]),
+        "active_master": active_master_internal,
+        "slave_list": '\n'.join([get_address_by_instance_object(conn, i, opts, True) for i in slave_nodes]),
         "zoo_list": zoo_list,
         "cluster_url": cluster_url,
         "hdfs_data_dirs": hdfs_data_dirs,
@@ -764,7 +779,7 @@ def main():
     elif action == "login":
         (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(
             conn, opts, cluster_name)
-        master = get_address_by_instance_object(node=master_nodes[0],opts=opts)
+        master = get_address_by_instance_object(conn=conn, node=master_nodes[0],opts=opts)
         print "Logging into master " + master + "..."
         proxy_opt = ""
         if opts.proxy_port != None:
@@ -774,7 +789,7 @@ def main():
 
     elif action == "get-master":
         (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(conn, opts, cluster_name)
-        print get_address_by_instance_object(node=master_nodes[0], opts=opts)
+        print get_address_by_instance_object(conn, node=master_nodes[0], opts=opts)
 
     elif action == "stop":
         response = raw_input("Are you sure you want to stop the cluster " +
